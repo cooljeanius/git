@@ -686,6 +686,11 @@ test_expect_success 'partial clone with -o' '
 	git clone -o blah --filter=blob:limit=0 "file://$(pwd)/server" client
 '
 
+test_expect_success 'ensure that filter is written to config' '
+	FILTER=$(git -C client config --get remote.blah.partialclonefilter) &&
+	test "$FILTER" = "blob:limit=0"
+'
+
 test_expect_success 'partial clone: warn if server does not support object filtering' '
 	rm -rf server client &&
 	test_create_repo server &&
