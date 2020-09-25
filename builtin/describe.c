@@ -332,7 +332,7 @@ static void describe_commit(struct object_id *oid, struct strbuf *dst)
 	if (!have_util) {
 		struct hashmap_iter iter;
 		struct commit *c;
-		struct commit_name *n;
+		struct commit_name *n = NULL;
 
 		init_commit_names(&commit_names);
 		hashmap_for_each_entry(&names, &iter, n,

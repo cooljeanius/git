@@ -498,7 +498,7 @@ static void invalidate_pack_id(unsigned int id)
 	unsigned long lu;
 	struct tag *t;
 	struct hashmap_iter iter;
-	struct object_entry *e;
+	struct object_entry *e = NULL;
 
 	hashmap_for_each_entry(&object_table, &iter, e, ent) {
 		if (e->pack_id == id)
