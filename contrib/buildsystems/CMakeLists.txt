@@ -4,7 +4,17 @@
 
 #[[
 
-Instructions to run CMake:
+Instructions how to use this in Visual Studio:
+
+Open the worktree as a folder. Visual Studio 2019 and later will detect
+the CMake configuration automatically and set everything up for you,
+ready to build. You can then run the tests in `t/` via a regular Git Bash.
+
+Note: Visual Studio also has the option of opening the CMake configuration
+directly; Using this option, Visual Studio will not find the source code,
+though, therefore the `File>Open>Folder...` option is preferred.
+
+Instructions to run CMake manually:
 
 cmake `relative-path-to-CMakeLists.txt` -DCMAKE_BUILD_TYPE=Release
 Eg.
