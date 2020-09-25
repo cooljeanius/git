@@ -1569,12 +1569,23 @@ void set_ref_status_for_push(struct ref *remote_refs, int send_mirror,
 		 * with the remote-tracking branch to find the value
 		 * to expect, but we did not have such a tracking
 		 * branch.
+		 *
+		 * If the tip of the remote-tracking ref is unreachable
+		 * from any reflog entry of its local ref indicating a
+		 * possible update since checkout; reject the push.
 		 */
 		if (ref->expect_old_sha1) {
 			if (!oideq(&ref->old_oid, &ref->old_oid_expect))
 				reject_reason = REF_STATUS_REJECT_STALE;
+			else if (ref->check_reachable && ref->unreachable)
+				reject_reason =
+					REF_STATUS_REJECT_REMOTE_UPDATED;
 			else
-				/* If the ref isn't stale then force the update. */
+				/*
+				 * If the ref isn't stale, and is reachable
+				 * from from one of the reflog entries of
+				 * the local branch, force the update.
+				 */
 				force_ref_update = 1;
 		}
 
@@ -2441,6 +2452,118 @@ static int remote_tracking(struct remote *remote, const char *refname,
 	return 0;
 }
 
+/*
+ * The struct "reflog_commit_list" and related helper functions
+ * for list manipulation are used for collecting commits into a
+ * list during reflog traversals in "if_exists_or_grab_until()".
+ */
+struct reflog_commit_list {
+	struct commit **items;
+	size_t nr, alloc;
+};
+
+/* Adds a commit to list. */
+static void add_commit(struct reflog_commit_list *list, struct commit *commit)
+{
+	ALLOC_GROW(list->items, list->nr + 1, list->alloc);
+	list->items[list->nr++] = commit;
+}
+
+/* Free and reset the list. */
+static void free_reflog_commit_list(struct reflog_commit_list *list)
+{
+	FREE_AND_NULL(list->items);
+	list->nr = list->alloc = 0;
+}
+
+struct check_and_collect_until_cb_data {
+	struct commit *remote_commit;
+	struct reflog_commit_list *local_commits;
+};
+
+
+static int check_and_collect_until(struct object_id *o_oid,
+				   struct object_id *n_oid,
+				   const char *ident, timestamp_t timestamp,
+				   int tz, const char *message, void *cb_data)
+{
+	struct commit *commit;
+	struct check_and_collect_until_cb_data *cb = cb_data;
+
+	/*
+	 * If the reflog entry timestamp is older than the
+	 * remote commit date, there is no need to check or
+	 * collect entries older than this one.
+	 */
+	if (timestamp < cb->remote_commit->date)
+		return -1;
+
+	/* An entry was found. */
+	if (oideq(n_oid, &cb->remote_commit->object.oid))
+		return 1;
+
+	/* Lookup the commit and append it to the list. */
+	if ((commit = lookup_commit_reference(the_repository, n_oid)))
+		add_commit(cb->local_commits, commit);
+
+	return 0;
+}
+
+/*
+ * Iterate through the reflog of a local ref to check if there is an entry for
+ * the given remote-tracking ref (i.e., if it was checked out); runs until the
+ * timestamp of an entry is older than the commit date of the remote-tracking
+ * ref. Any commits that seen along the way are collected into a list to check
+ * if the remote-tracking ref is reachable from any of them.
+ */
+static int is_reachable_in_reflog(const char *local_ref_name,
+				  const struct object_id *remote_oid)
+{
+	struct commit *remote_commit;
+	struct reflog_commit_list list = { NULL, 0, 0 };
+	struct check_and_collect_until_cb_data cb;
+	int ret = 0;
+
+	remote_commit = lookup_commit_reference(the_repository, remote_oid);
+	if (!remote_commit)
+		goto cleanup_return;
+
+	cb.remote_commit = remote_commit;
+	cb.local_commits = &list;
+	ret = for_each_reflog_ent_reverse(local_ref_name,
+					  check_and_collect_until, &cb);
+
+	/* We found an entry in the reflog. */
+	if (ret > 0)
+		goto cleanup_return;
+
+	/*
+	 * Check if "remote_commit" is reachable from
+	 * any of the commits in the collected list.
+	 */
+	if (list.nr > 0)
+		ret = in_merge_bases_many(remote_commit, list.nr, list.items);
+
+cleanup_return:
+	free_reflog_commit_list(&list);
+	return ret;
+}
+
+/*
+ * Check for reachability of a remote-tracking
+ * ref in the reflog entries of its local ref.
+ */
+static void check_if_includes_upstream(struct ref *remote_ref)
+{
+	struct ref *local_ref = get_local_ref(remote_ref->name);
+
+	if (!local_ref)
+		return;
+
+	if (!is_reachable_in_reflog(local_ref->name, &remote_ref->old_oid))
+		remote_ref->unreachable = 1;
+}
+
 static void apply_cas(struct push_cas_option *cas,
 		      struct remote *remote,
 		      struct ref *ref)
@@ -2457,6 +2580,8 @@ static void apply_cas(struct push_cas_option *cas,
 			oidcpy(&ref->old_oid_expect, &entry->expect);
 		else if (remote_tracking(remote, ref->name, &ref->old_oid_expect))
 			oidclr(&ref->old_oid_expect);
+		else
+			ref->check_reachable = cas->use_force_if_includes;
 		return;
 	}
 
@@ -2467,6 +2592,8 @@ static void apply_cas(struct push_cas_option *cas,
 	ref->expect_old_sha1 = 1;
 	if (remote_tracking(remote, ref->name, &ref->old_oid_expect))
 		oidclr(&ref->old_oid_expect);
+	else
+		ref->check_reachable = cas->use_force_if_includes;
 }
 
 void apply_push_cas(struct push_cas_option *cas,
@@ -2474,6 +2601,15 @@ void apply_push_cas(struct push_cas_option *cas,
 		    struct ref *remote_refs)
 {
 	struct ref *ref;
-	for (ref = remote_refs; ref; ref = ref->next)
+	for (ref = remote_refs; ref; ref = ref->next) {
 		apply_cas(cas, remote, ref);
+
+		/*
+		 * If "compare-and-swap" is in "use_tracking[_for_rest]"
+		 * mode, and if "--force-if-includes" was specified, run
+		 * the check.
+		 */
+		if (ref->check_reachable)
+			check_if_includes_upstream(ref);
+	}
 }
