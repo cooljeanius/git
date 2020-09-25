@@ -230,7 +230,7 @@ struct bloom_filter *get_or_compute_bloom_filter(struct repository *r,
 
 	if (diff_queued_diff.nr <= settings->max_changed_paths) {
 		struct hashmap pathmap;
-		struct pathmap_hash_entry *e;
+		struct pathmap_hash_entry *e = NULL;
 		struct hashmap_iter iter;
 		hashmap_init(&pathmap, pathmap_cmp, NULL, 0);
 

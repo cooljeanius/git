@@ -29,8 +29,8 @@ static void dump_run(void)
 		char name[FLEX_ARRAY];
 	};
 
-	struct dir_entry *dir;
-	struct cache_entry *ce;
+	struct dir_entry *dir = NULL;
+	struct cache_entry *ce = NULL;
 
 	read_cache();
 	if (single) {

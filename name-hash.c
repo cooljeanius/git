@@ -706,7 +706,7 @@ void adjust_dirname_case(struct index_state *istate, char *name)
 
 struct cache_entry *index_file_exists(struct index_state *istate, const char *name, int namelen, int icase)
 {
-	struct cache_entry *ce;
+	struct cache_entry *ce = NULL;
 	unsigned int hash = memihash(name, namelen);
 
 	lazy_init_name_hash(istate);

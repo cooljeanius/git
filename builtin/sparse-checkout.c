@@ -67,7 +67,7 @@ static int sparse_checkout_list(int argc, const char **argv)
 
 	if (pl.use_cone_patterns) {
 		int i;
-		struct pattern_entry *pe;
+		struct pattern_entry *pe = NULL;
 		struct hashmap_iter iter;
 		struct string_list sl = STRING_LIST_INIT_DUP;
 
@@ -153,7 +153,7 @@ static char *escaped_pattern(char *pattern)
 static void write_cone_to_file(FILE *fp, struct pattern_list *pl)
 {
 	int i;
-	struct pattern_entry *pe;
+	struct pattern_entry *pe = NULL;
 	struct hashmap_iter iter;
 	struct string_list sl = STRING_LIST_INIT_DUP;
 	struct strbuf parent_pattern = STRBUF_INIT;
@@ -465,7 +465,7 @@ static void add_patterns_cone_mode(int argc, const char **argv,
 				   struct pattern_list *pl)
 {
 	struct strbuf buffer = STRBUF_INIT;
-	struct pattern_entry *pe;
+	struct pattern_entry *pe = NULL;
 	struct hashmap_iter iter;
 	struct pattern_list existing;
 	char *sparse_filename = get_sparse_checkout_filename();

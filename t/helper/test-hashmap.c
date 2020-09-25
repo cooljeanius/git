@@ -162,7 +162,7 @@ int cmd__hashmap(int argc, const char **argv)
 	while (strbuf_getline(&line, stdin) != EOF) {
 		char *cmd, *p1 = NULL, *p2 = NULL;
 		unsigned int hash = 0;
-		struct test_entry *entry;
+		struct test_entry *entry = NULL;
 
 		/* break line into command and up to two parameters */
 		cmd = strtok(line.buf, DELIM);

@@ -2151,8 +2151,8 @@ static void handle_directory_level_conflicts(struct merge_options *opt,
 					     struct tree *merge)
 {
 	struct hashmap_iter iter;
-	struct dir_rename_entry *head_ent;
-	struct dir_rename_entry *merge_ent;
+	struct dir_rename_entry *head_ent = NULL;
+	struct dir_rename_entry *merge_ent = NULL;
 
 	struct string_list remove_from_head = STRING_LIST_INIT_NODUP;
 	struct string_list remove_from_merge = STRING_LIST_INIT_NODUP;
@@ -2221,7 +2221,7 @@ static struct hashmap *get_directory_renames(struct diff_queue_struct *pairs)
 {
 	struct hashmap *dir_renames;
 	struct hashmap_iter iter;
-	struct dir_rename_entry *entry;
+	struct dir_rename_entry *entry = NULL;
 	int i;
 
 	/*
@@ -2590,7 +2590,7 @@ static struct string_list *get_renames(struct merge_options *opt,
 	int i;
 	struct hashmap collisions;
 	struct hashmap_iter iter;
-	struct collision_entry *e;
+	struct collision_entry *e = NULL;
 	struct string_list *renames;
 
 	compute_collisions(&collisions, dir_renames, pairs);
@@ -2862,7 +2862,7 @@ static void initial_cleanup_rename(struct diff_queue_struct *pairs,
 				   struct hashmap *dir_renames)
 {
 	struct hashmap_iter iter;
-	struct dir_rename_entry *e;
+	struct dir_rename_entry *e = NULL;
 
 	hashmap_for_each_entry(dir_renames, &iter, e,
 				ent /* member name */) {
