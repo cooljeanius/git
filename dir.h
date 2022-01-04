@@ -336,7 +336,15 @@ struct dir_struct {
 	struct oid_stat ss_info_exclude;
 	struct oid_stat ss_excludes_file;
 	unsigned unmanaged_exclude_files;
+
+	/* Stats about the traversal */
+	unsigned visited_paths;
+	unsigned visited_directories;
 };
+
+#define DIR_INIT { 0 }
+
+struct dirent *readdir_skip_dot_and_dotdot(DIR *dirp);
 
 /*Count the number of slashes for string s*/
 int count_slashes(const char *s);
@@ -354,14 +362,12 @@ int count_slashes(const char *s);
 int simple_length(const char *match);
 int no_wildcard(const char *string);
 char *common_prefix(const struct pathspec *pathspec);
-int match_pathspec(const struct index_state *istate,
+int match_pathspec(struct index_state *istate,
 		   const struct pathspec *pathspec,
 		   const char *name, int namelen,
 		   int prefix, char *seen, int is_dir);
 int report_path_error(const char *ps_matched, const struct pathspec *pathspec);
 int within_depth(const char *name, int namelen, int depth, int max_depth);
-
-void dir_init(struct dir_struct *dir);
 
 int fill_directory(struct dir_struct *dir,
 		   struct index_state *istate,
@@ -388,6 +394,14 @@ enum pattern_match_result path_matches_pattern_list(const char *pathname,
 				const char *basename, int *dtype,
 				struct pattern_list *pl,
 				struct index_state *istate);
+
+int init_sparse_checkout_patterns(struct index_state *state);
+
+int path_in_sparse_checkout(const char *path,
+			    struct index_state *istate);
+int path_in_cone_mode_sparse_checkout(const char *path,
+				      struct index_state *istate);
+
 struct dir_entry *dir_add_ignored(struct dir_struct *dir,
 				  struct index_state *istate,
 				  const char *pathname, int len);
@@ -420,7 +434,8 @@ int hashmap_contains_parent(struct hashmap *map,
 struct pattern_list *add_pattern_list(struct dir_struct *dir,
 				      int group_type, const char *src);
 int add_patterns_from_file_to_list(const char *fname, const char *base, int baselen,
-				   struct pattern_list *pl, struct  index_state *istate);
+				   struct pattern_list *pl, struct index_state *istate,
+				   unsigned flags);
 void add_patterns_from_file(struct dir_struct *, const char *fname);
 int add_patterns_from_blob_to_list(struct object_id *oid,
 				   const char *base, int baselen,
@@ -446,8 +461,21 @@ static inline int is_dot_or_dotdot(const char *name)
 
 int is_empty_dir(const char *dir);
 
+/*
+ * Retrieve the "humanish" basename of the given Git URL.
+ *
+ * For example:
+ * 	/path/to/repo.git => "repo"
+ * 	host.xz:foo/.git => "foo"
+ * 	http://example.com/user/bar.baz => "bar.baz"
+ */
+char *git_url_basename(const char *repo, int is_bundle, int is_bare);
+void strip_dir_trailing_slashes(char *dir);
+
 void setup_standard_excludes(struct dir_struct *dir);
 
+char *get_sparse_checkout_filename(void);
+int get_sparse_checkout_patterns(struct pattern_list *pl);
 
 /* Constants for remove_dir_recursively: */
 
@@ -480,7 +508,9 @@ int remove_dir_recursively(struct strbuf *path, int flag);
 int remove_path(const char *path);
 
 int fspathcmp(const char *a, const char *b);
+int fspatheq(const char *a, const char *b);
 int fspathncmp(const char *a, const char *b, size_t count);
+unsigned int fspathhash(const char *str);
 
 /*
  * The prefix part of pattern must not contains wildcards.
@@ -490,12 +520,12 @@ int git_fnmatch(const struct pathspec_item *item,
 		const char *pattern, const char *string,
 		int prefix);
 
-int submodule_path_match(const struct index_state *istate,
+int submodule_path_match(struct index_state *istate,
 			 const struct pathspec *ps,
 			 const char *submodule_name,
 			 char *seen);
 
-static inline int ce_path_match(const struct index_state *istate,
+static inline int ce_path_match(struct index_state *istate,
 				const struct cache_entry *ce,
 				const struct pathspec *pathspec,
 				char *seen)
@@ -504,7 +534,7 @@ static inline int ce_path_match(const struct index_state *istate,
 			      S_ISDIR(ce->ce_mode) || S_ISGITLINK(ce->ce_mode));
 }
 
-static inline int dir_path_match(const struct index_state *istate,
+static inline int dir_path_match(struct index_state *istate,
 				 const struct dir_entry *ent,
 				 const struct pathspec *pathspec,
 				 int prefix, char *seen)

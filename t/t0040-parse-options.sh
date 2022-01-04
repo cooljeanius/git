@@ -5,6 +5,7 @@
 
 test_description='our own option parser'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 cat >expect <<\EOF
@@ -37,7 +38,6 @@ String options
     --list <str>          add str to list
 
 Magic arguments
-    --quux                means --quux
     -NUM                  set integer to NUM
     +                     same as -b
     --ambiguous           positive ambiguity
@@ -61,7 +61,7 @@ EOF
 test_expect_success 'test help' '
 	test_must_fail test-tool parse-options -h >output 2>output.err &&
 	test_must_be_empty output.err &&
-	test_i18ncmp expect output
+	test_cmp expect output
 '
 
 mv expect expect.err
@@ -84,7 +84,7 @@ check_unknown_i18n() {
 	cat expect.err >>expect &&
 	test_must_fail test-tool parse-options $* >output 2>output.err &&
 	test_must_be_empty output &&
-	test_i18ncmp expect output.err
+	test_cmp expect output.err
 }
 
 test_expect_success 'OPT_BOOL() #1' 'check boolean: 1 --yes'
@@ -169,9 +169,45 @@ test_expect_success 'long options' '
 '
 
 test_expect_success 'missing required value' '
-	test_expect_code 129 test-tool parse-options -s &&
-	test_expect_code 129 test-tool parse-options --string &&
-	test_expect_code 129 test-tool parse-options --file
+	cat >expect <<-\EOF &&
+	error: switch `s'\'' requires a value
+	EOF
+	test_expect_code 129 test-tool parse-options -s 2>actual &&
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	error: option `string'\'' requires a value
+	EOF
+	test_expect_code 129 test-tool parse-options --string 2>actual &&
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	error: option `file'\'' requires a value
+	EOF
+	test_expect_code 129 test-tool parse-options --file 2>actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'superfluous value provided: boolean' '
+	cat >expect <<-\EOF &&
+	error: option `yes'\'' takes no value
+	EOF
+	test_expect_code 129 test-tool parse-options --yes=hi 2>actual &&
+	test_cmp expect actual &&
+
+	cat >expect <<-\EOF &&
+	error: option `no-yes'\'' takes no value
+	EOF
+	test_expect_code 129 test-tool parse-options --no-yes=hi 2>actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'superfluous value provided: cmdmode' '
+	cat >expect <<-\EOF &&
+	error: option `mode1'\'' takes no value
+	EOF
+	test_expect_code 129 test-tool parse-options --mode1=hi 2>actual &&
+	test_cmp expect actual
 '
 
 cat >expect <<\EOF
@@ -250,7 +286,7 @@ EOF
 test_expect_success 'detect possible typos' '
 	test_must_fail test-tool parse-options -boolean >output 2>output.err &&
 	test_must_be_empty output &&
-	test_i18ncmp typo.err output.err
+	test_cmp typo.err output.err
 '
 
 cat >typo.err <<\EOF
@@ -260,11 +296,7 @@ EOF
 test_expect_success 'detect possible typos' '
 	test_must_fail test-tool parse-options -ambiguous >output 2>output.err &&
 	test_must_be_empty output &&
-	test_i18ncmp typo.err output.err
-'
-
-test_expect_success 'keep some options as arguments' '
-	test-tool parse-options --expect="arg 00: --quux" --quux
+	test_cmp typo.err output.err
 '
 
 cat >expect <<\EOF

@@ -341,6 +341,27 @@ int mingw_rmdir(const char *pathname)
 {
 	int ret, tries = 0;
 	wchar_t wpathname[MAX_PATH];
+	struct stat st;
+
+	/*
+	 * Contrary to Linux' `rmdir()`, Windows' _wrmdir() and _rmdir()
+	 * (and `RemoveDirectoryW()`) will attempt to remove the target of a
+	 * symbolic link (if it points to a directory).
+	 *
+	 * This behavior breaks the assumption of e.g. `remove_path()` which
+	 * upon successful deletion of a file will attempt to remove its parent
+	 * directories recursively until failure (which usually happens when
+	 * the directory is not empty).
+	 *
+	 * Therefore, before calling `_wrmdir()`, we first check if the path is
+	 * a symbolic link. If it is, we exit and return the same error as
+	 * Linux' `rmdir()` would, i.e. `ENOTDIR`.
+	 */
+	if (!mingw_lstat(pathname, &st) && S_ISLNK(st.st_mode)) {
+		errno = ENOTDIR;
+		return -1;
+	}
+
 	if (xutftowcs_path(wpathname, pathname) < 0)
 		return -1;
 
@@ -367,6 +388,8 @@ int mingw_rmdir(const char *pathname)
 	       ask_yes_no_if_possible("Deletion of directory '%s' failed. "
 			"Should I try again?", pathname))
 	       ret = _wrmdir(wpathname);
+	if (!ret)
+		invalidate_lstat_cache();
 	return ret;
 }
 
@@ -683,6 +706,8 @@ ssize_t mingw_write(int fd, const void *buf, size_t len)
 int mingw_access(const char *filename, int mode)
 {
 	wchar_t wfilename[MAX_PATH];
+	if (!strcmp("nul", filename) || !strcmp("/dev/null", filename))
+		return 0;
 	if (xutftowcs_path(wfilename, filename) < 0)
 		return -1;
 	/* X_OK is not supported by the MSVCRT version */
@@ -1058,6 +1083,7 @@ int pipe(int filedes[2])
 	return 0;
 }
 
+#ifndef __MINGW64__
 struct tm *gmtime_r(const time_t *timep, struct tm *result)
 {
 	if (gmtime_s(result, timep) == 0)
@@ -1071,6 +1097,7 @@ struct tm *localtime_r(const time_t *timep, struct tm *result)
 		return result;
 	return NULL;
 }
+#endif
 
 char *mingw_getcwd(char *pointer, int len)
 {

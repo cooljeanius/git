@@ -390,12 +390,9 @@ static xdchange_t *xdl_add_change(xdchange_t *xscr, long i1, long i2, long chg1,
 }
 
 
-static int recs_match(xrecord_t *rec1, xrecord_t *rec2, long flags)
+static int recs_match(xrecord_t *rec1, xrecord_t *rec2)
 {
-	return (rec1->ha == rec2->ha &&
-		xdl_recmatch(rec1->ptr, rec1->size,
-			     rec2->ptr, rec2->size,
-			     flags));
+	return (rec1->ha == rec2->ha);
 }
 
 /*
@@ -759,10 +756,10 @@ static inline int group_previous(xdfile_t *xdf, struct xdlgroup *g)
  * following group, expand this group to include it. Return 0 on success or -1
  * if g cannot be slid down.
  */
-static int group_slide_down(xdfile_t *xdf, struct xdlgroup *g, long flags)
+static int group_slide_down(xdfile_t *xdf, struct xdlgroup *g)
 {
 	if (g->end < xdf->nrec &&
-	    recs_match(xdf->recs[g->start], xdf->recs[g->end], flags)) {
+	    recs_match(xdf->recs[g->start], xdf->recs[g->end])) {
 		xdf->rchg[g->start++] = 0;
 		xdf->rchg[g->end++] = 1;
 
@@ -780,10 +777,10 @@ static int group_slide_down(xdfile_t *xdf, struct xdlgroup *g, long flags)
  * into a previous group, expand this group to include it. Return 0 on success
  * or -1 if g cannot be slid up.
  */
-static int group_slide_up(xdfile_t *xdf, struct xdlgroup *g, long flags)
+static int group_slide_up(xdfile_t *xdf, struct xdlgroup *g)
 {
 	if (g->start > 0 &&
-	    recs_match(xdf->recs[g->start - 1], xdf->recs[g->end - 1], flags)) {
+	    recs_match(xdf->recs[g->start - 1], xdf->recs[g->end - 1])) {
 		xdf->rchg[--g->start] = 1;
 		xdf->rchg[--g->end] = 0;
 
@@ -794,12 +791,6 @@ static int group_slide_up(xdfile_t *xdf, struct xdlgroup *g, long flags)
 	} else {
 		return -1;
 	}
-}
-
-static void xdl_bug(const char *msg)
-{
-	fprintf(stderr, "BUG: %s\n", msg);
-	exit(1);
 }
 
 /*
@@ -839,9 +830,9 @@ int xdl_change_compact(xdfile_t *xdf, xdfile_t *xdfo, long flags) {
 			end_matching_other = -1;
 
 			/* Shift the group backward as much as possible: */
-			while (!group_slide_up(xdf, &g, flags))
+			while (!group_slide_up(xdf, &g))
 				if (group_previous(xdfo, &go))
-					xdl_bug("group sync broken sliding up");
+					BUG("group sync broken sliding up");
 
 			/*
 			 * This is this highest that this group can be shifted.
@@ -854,10 +845,10 @@ int xdl_change_compact(xdfile_t *xdf, xdfile_t *xdfo, long flags) {
 
 			/* Now shift the group forward as far as possible: */
 			while (1) {
-				if (group_slide_down(xdf, &g, flags))
+				if (group_slide_down(xdf, &g))
 					break;
 				if (group_next(xdfo, &go))
-					xdl_bug("group sync broken sliding down");
+					BUG("group sync broken sliding down");
 
 				if (go.end > go.start)
 					end_matching_other = g.end;
@@ -881,10 +872,10 @@ int xdl_change_compact(xdfile_t *xdf, xdfile_t *xdfo, long flags) {
 			 * other file that it can align with.
 			 */
 			while (go.end == go.start) {
-				if (group_slide_up(xdf, &g, flags))
-					xdl_bug("match disappeared");
+				if (group_slide_up(xdf, &g))
+					BUG("match disappeared");
 				if (group_previous(xdfo, &go))
-					xdl_bug("group sync broken sliding to match");
+					BUG("group sync broken sliding to match");
 			}
 		} else if (flags & XDF_INDENT_HEURISTIC) {
 			/*
@@ -924,10 +915,10 @@ int xdl_change_compact(xdfile_t *xdf, xdfile_t *xdfo, long flags) {
 			}
 
 			while (g.end > best_shift) {
-				if (group_slide_up(xdf, &g, flags))
-					xdl_bug("best shift unreached");
+				if (group_slide_up(xdf, &g))
+					BUG("best shift unreached");
 				if (group_previous(xdfo, &go))
-					xdl_bug("group sync broken sliding to blank line");
+					BUG("group sync broken sliding to blank line");
 			}
 		}
 
@@ -936,11 +927,11 @@ int xdl_change_compact(xdfile_t *xdf, xdfile_t *xdfo, long flags) {
 		if (group_next(xdf, &g))
 			break;
 		if (group_next(xdfo, &go))
-			xdl_bug("group sync broken moving to next group");
+			BUG("group sync broken moving to next group");
 	}
 
 	if (!group_next(xdfo, &go))
-		xdl_bug("group sync broken at end of file");
+		BUG("group sync broken at end of file");
 
 	return 0;
 }
@@ -998,7 +989,7 @@ static int xdl_call_hunk_func(xdfenv_t *xe, xdchange_t *xscr, xdemitcb_t *ecb,
 	return 0;
 }
 
-static void xdl_mark_ignorable(xdchange_t *xscr, xdfenv_t *xe, long flags)
+static void xdl_mark_ignorable_lines(xdchange_t *xscr, xdfenv_t *xe, long flags)
 {
 	xdchange_t *xch;
 
@@ -1014,6 +1005,46 @@ static void xdl_mark_ignorable(xdchange_t *xscr, xdfenv_t *xe, long flags)
 		rec = &xe->xdf2.recs[xch->i2];
 		for (i = 0; i < xch->chg2 && ignore; i++)
 			ignore = xdl_blankline(rec[i]->ptr, rec[i]->size, flags);
+
+		xch->ignore = ignore;
+	}
+}
+
+static int record_matches_regex(xrecord_t *rec, xpparam_t const *xpp) {
+	regmatch_t regmatch;
+	int i;
+
+	for (i = 0; i < xpp->ignore_regex_nr; i++)
+		if (!regexec_buf(xpp->ignore_regex[i], rec->ptr, rec->size, 1,
+				 &regmatch, 0))
+			return 1;
+
+	return 0;
+}
+
+static void xdl_mark_ignorable_regex(xdchange_t *xscr, const xdfenv_t *xe,
+				     xpparam_t const *xpp)
+{
+	xdchange_t *xch;
+
+	for (xch = xscr; xch; xch = xch->next) {
+		xrecord_t **rec;
+		int ignore = 1;
+		long i;
+
+		/*
+		 * Do not override --ignore-blank-lines.
+		 */
+		if (xch->ignore)
+			continue;
+
+		rec = &xe->xdf1.recs[xch->i1];
+		for (i = 0; i < xch->chg1 && ignore; i++)
+			ignore = record_matches_regex(rec[i], xpp);
+
+		rec = &xe->xdf2.recs[xch->i2];
+		for (i = 0; i < xch->chg2 && ignore; i++)
+			ignore = record_matches_regex(rec[i], xpp);
 
 		xch->ignore = ignore;
 	}
@@ -1038,7 +1069,10 @@ int xdl_diff(mmfile_t *mf1, mmfile_t *mf2, xpparam_t const *xpp,
 	}
 	if (xscr) {
 		if (xpp->flags & XDF_IGNORE_BLANK_LINES)
-			xdl_mark_ignorable(xscr, &xe, xpp->flags);
+			xdl_mark_ignorable_lines(xscr, &xe, xpp->flags);
+
+		if (xpp->ignore_regex)
+			xdl_mark_ignorable_regex(xscr, &xe, xpp);
 
 		if (ef(&xe, xscr, ecb, xecfg) < 0) {
 

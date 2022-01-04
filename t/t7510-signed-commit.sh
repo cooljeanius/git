@@ -1,6 +1,9 @@
 #!/bin/sh
 
 test_description='signed commit tests'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 GNUPGHOME_NOT_USED=$GNUPGHOME
 . "$TEST_DIRECTORY/lib-gpg.sh"
@@ -25,7 +28,7 @@ test_expect_success GPG 'create signed commits' '
 	echo 3 >elif && git add elif &&
 	test_tick && git commit -m "third on side" &&
 
-	git checkout master &&
+	git checkout main &&
 	test_tick && git merge -S side &&
 	git tag merge &&
 
@@ -68,7 +71,25 @@ test_expect_success GPG 'create signed commits' '
 	git tag eleventh-signed $(cat oid) &&
 	echo 12 | git commit-tree --gpg-sign=B7227189 HEAD^{tree} >oid &&
 	test_line_count = 1 oid &&
-	git tag twelfth-signed-alt $(cat oid)
+	git tag twelfth-signed-alt $(cat oid) &&
+
+	cat >keydetails <<-\EOF &&
+	Key-Type: RSA
+	Key-Length: 2048
+	Subkey-Type: RSA
+	Subkey-Length: 2048
+	Name-Real: Unknown User
+	Name-Email: unknown@git.com
+	Expire-Date: 0
+	%no-ask-passphrase
+	%no-protection
+	EOF
+	gpg --batch --gen-key keydetails &&
+	echo 13 >file && git commit -a -S"unknown@git.com" -m thirteenth &&
+	git tag thirteenth-signed &&
+	DELETE_FINGERPRINT=$(gpg -K --with-colons --fingerprint --batch unknown@git.com | grep "^fpr" | head -n 1 | awk -F ":" "{print \$10;}") &&
+	gpg --batch --yes --delete-secret-keys $DELETE_FINGERPRINT &&
+	gpg --batch --yes --delete-keys unknown@git.com
 '
 
 test_expect_success GPG 'verify and show signatures' '
@@ -105,6 +126,13 @@ test_expect_success GPG 'verify and show signatures' '
 			echo $commit OK || exit 1
 		done
 	)
+'
+
+test_expect_success GPG 'verify-commit exits failure on unknown signature' '
+	test_must_fail git verify-commit thirteenth-signed 2>actual &&
+	! grep "Good signature from" actual &&
+	! grep "BAD signature from" actual &&
+	grep -q -F -e "No public key" -e "public key not found" actual
 '
 
 test_expect_success GPG 'verify-commit exits success on untrusted signature' '
@@ -172,7 +200,7 @@ test_expect_success GPG 'show signed commit with signature' '
 	git cat-file commit initial >cat &&
 	grep -v -e "gpg: " -e "Warning: " show >show.commit &&
 	grep -e "gpg: " -e "Warning: " show >show.gpg &&
-	grep -v "^ " cat | grep -v "^$(test_oid header) " >cat.commit &&
+	grep -v "^ " cat | grep -v "^gpgsig.* " >cat.commit &&
 	test_cmp show.commit commit &&
 	test_cmp show.gpg verify.2 &&
 	test_cmp cat.commit verify.1
@@ -200,7 +228,7 @@ test_expect_success GPG 'detect fudged signature with NUL' '
 '
 
 test_expect_success GPG 'amending already signed commit' '
-	git checkout fourth-signed^0 &&
+	git checkout -f fourth-signed^0 &&
 	git commit --amend -S --no-edit &&
 	git verify-commit HEAD &&
 	git show -s --show-signature HEAD >actual &&
@@ -332,6 +360,49 @@ test_expect_success GPG 'show double signature with custom format' '
 	EOF
 	git log -1 --format="%G?%n%GK%n%GS%n%GF%n%GP" $(cat double-commit.commit) >actual &&
 	test_cmp expect actual
+'
+
+
+# NEEDSWORK: This test relies on the test_tick commit/author dates from the first
+# 'create signed commits' test even though it creates its own
+test_expect_success GPG 'verify-commit verifies multiply signed commits' '
+	git init multiply-signed &&
+	cd multiply-signed &&
+	test_commit first &&
+	echo 1 >second &&
+	git add second &&
+	tree=$(git write-tree) &&
+	parent=$(git rev-parse HEAD^{commit}) &&
+	git commit --gpg-sign -m second &&
+	git cat-file commit HEAD &&
+	# Avoid trailing whitespace.
+	sed -e "s/^Q//" -e "s/^Z/ /" >commit <<-EOF &&
+	Qtree $tree
+	Qparent $parent
+	Qauthor A U Thor <author@example.com> 1112912653 -0700
+	Qcommitter C O Mitter <committer@example.com> 1112912653 -0700
+	Qgpgsig -----BEGIN PGP SIGNATURE-----
+	QZ
+	Q iHQEABECADQWIQRz11h0S+chaY7FTocTtvUezd5DDQUCX/uBDRYcY29tbWl0dGVy
+	Q QGV4YW1wbGUuY29tAAoJEBO29R7N3kMNd+8AoK1I8mhLHviPH+q2I5fIVgPsEtYC
+	Q AKCTqBh+VabJceXcGIZuF0Ry+udbBQ==
+	Q =tQ0N
+	Q -----END PGP SIGNATURE-----
+	Qgpgsig-sha256 -----BEGIN PGP SIGNATURE-----
+	QZ
+	Q iHQEABECADQWIQRz11h0S+chaY7FTocTtvUezd5DDQUCX/uBIBYcY29tbWl0dGVy
+	Q QGV4YW1wbGUuY29tAAoJEBO29R7N3kMN/NEAn0XO9RYSBj2dFyozi0JKSbssYMtO
+	Q AJwKCQ1BQOtuwz//IjU8TiS+6S4iUw==
+	Q =pIwP
+	Q -----END PGP SIGNATURE-----
+	Q
+	Qsecond
+	EOF
+	head=$(git hash-object -t commit -w commit) &&
+	git reset --hard $head &&
+	git verify-commit $head 2>actual &&
+	grep "Good signature from" actual &&
+	! grep "BAD signature from" actual
 '
 
 test_done

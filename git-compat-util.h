@@ -1,6 +1,19 @@
 #ifndef GIT_COMPAT_UTIL_H
 #define GIT_COMPAT_UTIL_H
 
+#if __STDC_VERSION__ - 0 < 199901L
+/*
+ * Git is in a testing period for mandatory C99 support in the compiler.  If
+ * your compiler is reasonably recent, you can try to enable C99 support (or,
+ * for MSVC, C11 support).  If you encounter a problem and can't enable C99
+ * support with your compiler (such as with "-std=gnu99") and don't have access
+ * to one with this support, such as GCC or Clang, you can remove this #if
+ * directive, but please report the details of your system to
+ * git@vger.kernel.org.
+ */
+#error "Required C99 support is in a test phase.  Please see git-compat-util.h for more details."
+#endif
+
 #ifdef USE_MSVC_CRTDBG
 /*
  * For these to work they must appear very early in each
@@ -113,6 +126,14 @@
 #define unsigned_mult_overflows(a, b) \
     ((a) && (b) > maximum_unsigned_value_of_type(a) / (a))
 
+/*
+ * Returns true if the left shift of "a" by "shift" bits will
+ * overflow. The type of "a" must be unsigned.
+ */
+#define unsigned_left_shift_overflows(a, shift) \
+    ((shift) < bitsizeof(a) && \
+     (a) > maximum_unsigned_value_of_type(a) >> (shift))
+
 #ifdef __GNUC__
 #define TYPEOF(x) (__typeof__(x))
 #else
@@ -127,7 +148,9 @@
 /* Approximation of the length of the decimal representation of this type. */
 #define decimal_length(x)	((int)(sizeof(x) * 2.56 + 0.5) + 1)
 
-#if defined(__sun__)
+#ifdef __MINGW64__
+#define _POSIX_C_SOURCE 1
+#elif defined(__sun__)
  /*
   * On Solaris, when _XOPEN_EXTENDED is set, its header file
   * forces the programs to be XPG4v2, defeating any _XOPEN_SOURCE
@@ -160,6 +183,9 @@
 # endif
 #define WIN32_LEAN_AND_MEAN  /* stops windows.h including winsock.h */
 #include <winsock2.h>
+#ifndef NO_UNIX_SOCKETS
+#include <afunix.h>
+#endif
 #include <windows.h>
 #define GIT_WINDOWS_NATIVE
 #endif
@@ -252,10 +278,15 @@ typedef unsigned long uintptr_t;
 #ifdef PRECOMPOSE_UNICODE
 #include "compat/precompose_utf8.h"
 #else
-static inline void precompose_argv(int argc, const char **argv)
+static inline const char *precompose_argv_prefix(int argc, const char **argv, const char *prefix)
 {
-	; /* nothing */
+	return prefix;
 }
+static inline const char *precompose_string_if_needed(const char *in)
+{
+	return in;
+}
+
 #define probe_utf8_pathname_composition()
 #endif
 
@@ -273,7 +304,7 @@ struct itimerval {
 
 #ifdef NO_SETITIMER
 static inline int setitimer(int which, const struct itimerval *value, struct itimerval *newvalue) {
-	; /* nothing */
+	return 0; /* pretend success */
 }
 #endif
 
@@ -347,6 +378,11 @@ static inline int noop_core_config(const char *var, const char *value, void *cb)
 	return 0;
 }
 #define platform_core_config noop_core_config
+#endif
+
+int lstat_cache_aware_rmdir(const char *path);
+#if !defined(__MINGW32__) && !defined(_MSC_VER)
+#define rmdir lstat_cache_aware_rmdir
 #endif
 
 #ifndef has_dos_drive_prefix
@@ -489,11 +525,13 @@ static inline int const_error(void)
 #define error_errno(...) (error_errno(__VA_ARGS__), const_error())
 #endif
 
-void set_die_routine(NORETURN_PTR void (*routine)(const char *err, va_list params));
-void set_error_routine(void (*routine)(const char *err, va_list params));
-extern void (*get_error_routine(void))(const char *err, va_list params);
-void set_warn_routine(void (*routine)(const char *warn, va_list params));
-extern void (*get_warn_routine(void))(const char *warn, va_list params);
+typedef void (*report_fn)(const char *, va_list params);
+
+void set_die_routine(NORETURN_PTR report_fn routine);
+void set_error_routine(report_fn routine);
+report_fn get_error_routine(void);
+void set_warn_routine(report_fn routine);
+report_fn get_warn_routine(void);
 void set_die_is_recursing_routine(int (*routine)(void));
 
 int starts_with(const char *str, const char *prefix);
@@ -714,7 +752,7 @@ char *gitmkdtemp(char *);
 
 #ifdef NO_UNSETENV
 #define unsetenv gitunsetenv
-void gitunsetenv(const char *);
+int gitunsetenv(const char *);
 #endif
 
 #ifdef NO_STRCASESTR
@@ -786,6 +824,12 @@ int git_vsnprintf(char *str, size_t maxsize,
 		  const char *format, va_list ap);
 #endif
 
+#ifdef OPEN_RETURNS_EINTR
+#undef open
+#define open git_open_with_retry
+int git_open_with_retry(const char *path, int flag, ...);
+#endif
+
 #ifdef __GLIBC_PREREQ
 #if __GLIBC_PREREQ(2, 1)
 #define HAVE_STRCHRNUL
@@ -841,6 +885,23 @@ static inline size_t st_sub(size_t a, size_t b)
 	return a - b;
 }
 
+static inline size_t st_left_shift(size_t a, unsigned shift)
+{
+	if (unsigned_left_shift_overflows(a, shift))
+		die("size_t overflow: %"PRIuMAX" << %u",
+		    (uintmax_t)a, shift);
+	return a << shift;
+}
+
+static inline unsigned long cast_size_t_to_ulong(size_t a)
+{
+	if (a != (unsigned long)a)
+		die("object too large to read on this platform: %"
+		    PRIuMAX" is cut off to %lu",
+		    (uintmax_t)a, (unsigned long)a);
+	return (unsigned long)a;
+}
+
 #ifdef HAVE_ALLOCA_H
 # include <alloca.h>
 # define xalloca(size)      (alloca(size))
@@ -857,7 +918,9 @@ void *xmemdupz(const void *data, size_t len);
 char *xstrndup(const char *str, size_t len);
 void *xrealloc(void *ptr, size_t size);
 void *xcalloc(size_t nmemb, size_t size);
+void xsetenv(const char *name, const char *value, int overwrite);
 void *xmmap(void *start, size_t length, int prot, int flags, int fd, off_t offset);
+const char *mmap_os_err(void);
 void *xmmap_gently(void *start, size_t length, int prot, int flags, int fd, off_t offset);
 int xopen(const char *path, int flags, ...);
 ssize_t xread(int fd, void *buf, size_t len);
@@ -885,7 +948,7 @@ int xstrncmpz(const char *s, const char *t, size_t len);
 #define FREE_AND_NULL(p) do { free(p); (p) = NULL; } while (0)
 
 #define ALLOC_ARRAY(x, alloc) (x) = xmalloc(st_mult(sizeof(*(x)), (alloc)))
-#define CALLOC_ARRAY(x, alloc) (x) = xcalloc((alloc), sizeof(*(x)));
+#define CALLOC_ARRAY(x, alloc) (x) = xcalloc((alloc), sizeof(*(x)))
 #define REALLOC_ARRAY(x, alloc) (x) = xrealloc((x), st_mult(sizeof(*(x)), (alloc)))
 
 #define COPY_ARRAY(dst, src, n) copy_array((dst), (src), (n), sizeof(*(dst)) + \
@@ -968,11 +1031,9 @@ static inline char *xstrdup_or_null(const char *str)
 
 static inline size_t xsize_t(off_t len)
 {
-	size_t size = (size_t) len;
-
-	if (len != (off_t) size)
+	if (len < 0 || (uintmax_t) len > SIZE_MAX)
 		die("Cannot handle files this big");
-	return size;
+	return (size_t) len;
 }
 
 __attribute__((format (printf, 3, 4)))
@@ -1174,9 +1235,12 @@ static inline int regexec_buf(const regex_t *preg, const char *buf, size_t size,
 #endif
 #endif
 
-#if defined(__GNUC__) || (_MSC_VER >= 1400) || defined(__C99_MACRO_WITH_VA_ARGS)
+/*
+ * This is always defined as a first step towards making the use of variadic
+ * macros unconditional. If it causes compilation problems on your platform,
+ * please report it to the Git mailing list at git@vger.kernel.org.
+ */
 #define HAVE_VARIADIC_MACROS 1
-#endif
 
 /* usage.c: only to be used for testing BUG() implementation (see test-tool) */
 extern int BUG_exit_code;
@@ -1226,9 +1290,12 @@ int access_or_die(const char *path, int mode, unsigned flag);
 /* Warn on an inaccessible file if errno indicates this is an error */
 int warn_on_fopen_errors(const char *path);
 
-#if !defined(USE_PARENS_AROUND_GETTEXT_N) && defined(__GNUC__)
-#define USE_PARENS_AROUND_GETTEXT_N 1
-#endif
+/*
+ * Open with O_NOFOLLOW, or equivalent. Note that the fallback equivalent
+ * may be racy. Do not use this as protection against an attacker who can
+ * simultaneously create paths.
+ */
+int open_nofollow(const char *path, int flags);
 
 #ifndef SHELL_PATH
 # define SHELL_PATH "/bin/sh"
@@ -1340,7 +1407,7 @@ static inline void *container_of_or_null_offset(void *ptr, size_t offset)
 	(type *)container_of_or_null_offset(ptr, offsetof(type, member))
 
 /*
- * like offsetof(), but takes a pointer to a a variable of type which
+ * like offsetof(), but takes a pointer to a variable of type which
  * contains @member, instead of a specified type.
  * @ptr is subject to multiple evaluation since we can't rely on __typeof__
  * everywhere.
@@ -1351,5 +1418,7 @@ static inline void *container_of_or_null_offset(void *ptr, size_t offset)
 #define OFFSETOF_VAR(ptr, member) \
 	((uintptr_t)&(ptr)->member - (uintptr_t)(ptr))
 #endif /* !__GNUC__ */
+
+void sleep_millisec(int millisec);
 
 #endif

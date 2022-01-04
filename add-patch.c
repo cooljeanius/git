@@ -280,6 +280,7 @@ static void add_p_state_clear(struct add_p_state *s)
 	clear_add_i_state(&s->s);
 }
 
+__attribute__((format (printf, 2, 3)))
 static void err(struct add_p_state *s, const char *fmt, ...)
 {
 	va_list args;
@@ -412,7 +413,7 @@ static int parse_diff(struct add_p_state *s, const struct pathspec *ps)
 		strvec_push(&args, ps->items[i].original);
 
 	setup_child_process(s, &cp, NULL);
-	cp.argv = args.v;
+	strvec_pushv(&cp.args, args.v);
 	res = capture_command(&cp, plain, 0);
 	if (res) {
 		strvec_clear(&args);
@@ -430,7 +431,7 @@ static int parse_diff(struct add_p_state *s, const struct pathspec *ps)
 
 		setup_child_process(s, &colored_cp, NULL);
 		xsnprintf((char *)args.v[color_arg_index], 8, "--color");
-		colored_cp.argv = args.v;
+		strvec_pushv(&colored_cp.args, args.v);
 		colored = &s->colored;
 		res = capture_command(&colored_cp, colored, 0);
 		strvec_clear(&args);
@@ -661,13 +662,18 @@ static void render_hunk(struct add_p_state *s, struct hunk *hunk,
 		else
 			new_offset += delta;
 
-		strbuf_addf(out, "@@ -%lu,%lu +%lu,%lu @@",
-			    old_offset, header->old_count,
-			    new_offset, header->new_count);
+		strbuf_addf(out, "@@ -%lu", old_offset);
+		if (header->old_count != 1)
+			strbuf_addf(out, ",%lu", header->old_count);
+		strbuf_addf(out, " +%lu", new_offset);
+		if (header->new_count != 1)
+			strbuf_addf(out, ",%lu", header->new_count);
+		strbuf_addstr(out, " @@");
+
 		if (len)
 			strbuf_add(out, p, len);
 		else if (colored)
-			strbuf_addf(out, "%s\n", GIT_COLOR_RESET);
+			strbuf_addf(out, "%s\n", s->s.reset_color);
 		else
 			strbuf_addch(out, '\n');
 	}
@@ -1060,7 +1066,7 @@ static void recolor_hunk(struct add_p_state *s, struct hunk *hunk)
 			      s->s.file_new_color :
 			      s->s.context_color);
 		strbuf_add(&s->colored, plain + current, eol - current);
-		strbuf_addstr(&s->colored, GIT_COLOR_RESET);
+		strbuf_addstr(&s->colored, s->s.reset_color);
 		if (next > eol)
 			strbuf_add(&s->colored, plain + eol, next - eol);
 		current = next;
@@ -1456,15 +1462,15 @@ static int patch_update_file(struct add_p_state *s,
 		else
 			prompt_mode_type = PROMPT_HUNK;
 
-		color_fprintf(stdout, s->s.prompt_color,
-			      "(%"PRIuMAX"/%"PRIuMAX") ",
+		printf("%s(%"PRIuMAX"/%"PRIuMAX") ", s->s.prompt_color,
 			      (uintmax_t)hunk_index + 1,
 			      (uintmax_t)(file_diff->hunk_nr
 						? file_diff->hunk_nr
 						: 1));
-		color_fprintf(stdout, s->s.prompt_color,
-			      _(s->mode->prompt_mode[prompt_mode_type]),
-			      s->buf.buf);
+		printf(_(s->mode->prompt_mode[prompt_mode_type]),
+		       s->buf.buf);
+		if (*s->s.reset_color)
+			fputs(s->s.reset_color, stdout);
 		fflush(stdout);
 		if (read_single_character(s) == EOF)
 			break;
@@ -1695,6 +1701,14 @@ int run_add_p(struct repository *r, enum add_p_mode mode,
 	if (mode == ADD_P_STASH)
 		s.mode = &patch_mode_stash;
 	else if (mode == ADD_P_RESET) {
+		/*
+		 * NEEDSWORK: Instead of comparing to the literal "HEAD",
+		 * compare the commit objects instead so that other ways of
+		 * saying the same thing (such as "@") are also handled
+		 * appropriately.
+		 *
+		 * This applies to the cases below too.
+		 */
 		if (!revision || !strcmp(revision, "HEAD"))
 			s.mode = &patch_mode_reset_head;
 		else

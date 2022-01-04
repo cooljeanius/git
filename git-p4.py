@@ -1668,7 +1668,7 @@ class P4Submit(Command, P4UserMap):
     Submit after inspect the message file.
 
     The `p4-post-changelist` hook is invoked after the submit has successfully
-    occured in P4. It takes no parameters and is meant primarily for notification
+    occurred in P4. It takes no parameters and is meant primarily for notification
     and cannot affect the outcome of the git p4 submit action.
     """
 
@@ -1977,8 +1977,11 @@ class P4Submit(Command, P4UserMap):
                 newdiff += "+%s\n" % os.readlink(newFile)
             else:
                 f = open(newFile, "r")
-                for line in f.readlines():
-                    newdiff += "+" + line
+                try:
+                    for line in f.readlines():
+                        newdiff += "+" + line
+                except UnicodeDecodeError:
+                    pass # Found non-text data and skip, since diff description should only include text
                 f.close()
 
         return (diff + newdiff).replace('\r\n', '\n')
@@ -3031,7 +3034,7 @@ class P4Sync(Command, P4UserMap):
             regexp = re.compile(pattern, re.VERBOSE)
             text = ''.join(decode_text_stream(c) for c in contents)
             text = regexp.sub(r'$\1$', text)
-            contents = [ text ]
+            contents = [ encode_text_stream(text) ]
 
         if self.largeFileSystem:
             (git_mode, contents) = self.largeFileSystem.processContent(git_mode, relPath, contents)
@@ -3600,19 +3603,18 @@ class P4Sync(Command, P4UserMap):
         return True
 
     def searchParent(self, parent, branch, target):
-        parentFound = False
-        for blob in read_pipe_lines(["git", "rev-list", "--reverse",
+        targetTree = read_pipe(["git", "rev-parse",
+                                "{}^{{tree}}".format(target)]).strip()
+        for line in read_pipe_lines(["git", "rev-list", "--format=%H %T",
                                      "--no-merges", parent]):
-            blob = blob.strip()
-            if len(read_pipe(["git", "diff-tree", blob, target])) == 0:
-                parentFound = True
+            if line.startswith("commit "):
+                continue
+            commit, tree = line.strip().split(" ")
+            if tree == targetTree:
                 if self.verbose:
-                    print("Found parent of %s in commit %s" % (branch, blob))
-                break
-        if parentFound:
-            return blob
-        else:
-            return None
+                    print("Found parent of %s in commit %s" % (branch, commit))
+                return commit
+        return None
 
     def importChanges(self, changes, origin_revision=0):
         cnt = 1
@@ -4186,7 +4188,7 @@ class P4Clone(P4Sync):
 
         # create a master branch and check out a work tree
         if gitBranchExists(self.branch):
-            system([ "git", "branch", "master", self.branch ])
+            system([ "git", "branch", currentGitBranch(), self.branch ])
             if not self.cloneBare:
                 system([ "git", "checkout", "-f" ])
         else:
@@ -4237,7 +4239,7 @@ class P4Unshelve(Command):
         """
 
         for parent in (range(65535)):
-            log = extractLogMessageFromGitCommit("{0}^{1}".format(starting_point, parent))
+            log = extractLogMessageFromGitCommit("{0}~{1}".format(starting_point, parent))
             settings = extractSettingsGitLog(log)
             if 'change' in settings:
                 return settings

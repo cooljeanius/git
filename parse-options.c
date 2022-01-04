@@ -8,10 +8,13 @@
 
 static int disallow_abbreviated_options;
 
-#define OPT_SHORT 1
-#define OPT_UNSET 2
+enum opt_parsed {
+	OPT_LONG  = 0,
+	OPT_SHORT = 1<<0,
+	OPT_UNSET = 1<<1,
+};
 
-int optbug(const struct option *opt, const char *reason)
+static int optbug(const struct option *opt, const char *reason)
 {
 	if (opt->long_name) {
 		if (opt->short_name)
@@ -22,9 +25,26 @@ int optbug(const struct option *opt, const char *reason)
 	return error("BUG: switch '%c' %s", opt->short_name, reason);
 }
 
+static const char *optname(const struct option *opt, enum opt_parsed flags)
+{
+	static struct strbuf sb = STRBUF_INIT;
+
+	strbuf_reset(&sb);
+	if (flags & OPT_SHORT)
+		strbuf_addf(&sb, "switch `%c'", opt->short_name);
+	else if (flags & OPT_UNSET)
+		strbuf_addf(&sb, "option `no-%s'", opt->long_name);
+	else if (flags == OPT_LONG)
+		strbuf_addf(&sb, "option `%s'", opt->long_name);
+	else
+		BUG("optname() got unknown flags %d", flags);
+
+	return sb.buf;
+}
+
 static enum parse_opt_result get_arg(struct parse_opt_ctx_t *p,
 				     const struct option *opt,
-				     int flags, const char **arg)
+				     enum opt_parsed flags, const char **arg)
 {
 	if (p->opt) {
 		*arg = p->opt;
@@ -50,7 +70,7 @@ static void fix_filename(const char *prefix, const char **file)
 static enum parse_opt_result opt_command_mode_error(
 	const struct option *opt,
 	const struct option *all_opts,
-	int flags)
+	enum opt_parsed flags)
 {
 	const struct option *that;
 	struct strbuf that_name = STRBUF_INIT;
@@ -82,7 +102,7 @@ static enum parse_opt_result opt_command_mode_error(
 static enum parse_opt_result get_value(struct parse_opt_ctx_t *p,
 				       const struct option *opt,
 				       const struct option *all_opts,
-				       int flags)
+				       enum opt_parsed flags)
 {
 	const char *s, *arg;
 	const int unset = flags & OPT_UNSET;
@@ -298,11 +318,11 @@ static enum parse_opt_result parse_long_opt(
 	const struct option *all_opts = options;
 	const char *arg_end = strchrnul(arg, '=');
 	const struct option *abbrev_option = NULL, *ambiguous_option = NULL;
-	int abbrev_flags = 0, ambiguous_flags = 0;
+	enum opt_parsed abbrev_flags = OPT_LONG, ambiguous_flags = OPT_LONG;
 
 	for (; options->type != OPTION_END; options++) {
 		const char *rest, *long_name = options->long_name;
-		int flags = 0, opt_flags = 0;
+		enum opt_parsed flags = OPT_LONG, opt_flags = OPT_LONG;
 
 		if (!long_name)
 			continue;
@@ -310,19 +330,6 @@ static enum parse_opt_result parse_long_opt(
 again:
 		if (!skip_prefix(arg, long_name, &rest))
 			rest = NULL;
-		if (options->type == OPTION_ARGUMENT) {
-			if (!rest)
-				continue;
-			if (*rest == '=')
-				return error(_("%s takes no value"),
-					     optname(options, flags));
-			if (*rest)
-				continue;
-			if (options->value)
-				*(int *)options->value = options->defval;
-			p->out[p->cpidx++] = arg - 2;
-			return PARSE_OPT_DONE;
-		}
 		if (!rest) {
 			/* abbreviated? */
 			if (!(p->flags & PARSE_OPT_KEEP_UNKNOWN) &&
@@ -397,8 +404,9 @@ is_abbreviated:
 	return PARSE_OPT_UNKNOWN;
 }
 
-static int parse_nodash_opt(struct parse_opt_ctx_t *p, const char *arg,
-			    const struct option *options)
+static enum parse_opt_result parse_nodash_opt(struct parse_opt_ctx_t *p,
+					      const char *arg,
+					      const struct option *options)
 {
 	const struct option *all_opts = options;
 
@@ -408,7 +416,7 @@ static int parse_nodash_opt(struct parse_opt_ctx_t *p, const char *arg,
 		if (options->short_name == arg[0] && arg[1] == '\0')
 			return get_value(p, options, all_opts, OPT_SHORT);
 	}
-	return -2;
+	return PARSE_OPT_ERROR;
 }
 
 static void check_typos(const char *arg, const struct option *options)
@@ -494,7 +502,8 @@ static void parse_options_check(const struct option *opts)
 
 static void parse_options_start_1(struct parse_opt_ctx_t *ctx,
 				  int argc, const char **argv, const char *prefix,
-				  const struct option *options, int flags)
+				  const struct option *options,
+				  enum parse_opt_flags flags)
 {
 	ctx->argc = argc;
 	ctx->argv = argv;
@@ -519,7 +528,8 @@ static void parse_options_start_1(struct parse_opt_ctx_t *ctx,
 
 void parse_options_start(struct parse_opt_ctx_t *ctx,
 			 int argc, const char **argv, const char *prefix,
-			 const struct option *options, int flags)
+			 const struct option *options,
+			 enum parse_opt_flags flags)
 {
 	memset(ctx, 0, sizeof(*ctx));
 	parse_options_start_1(ctx, argc, argv, prefix, options, flags);
@@ -585,7 +595,7 @@ static int show_gitcomp(const struct option *opts, int show_all)
 		if (!opts->long_name)
 			continue;
 		if (!show_all &&
-			(opts->flags & (PARSE_OPT_HIDDEN | PARSE_OPT_NOCOMPLETE)))
+			(opts->flags & (PARSE_OPT_HIDDEN | PARSE_OPT_NOCOMPLETE | PARSE_OPT_FROM_ALIAS)))
 			continue;
 
 		switch (opts->type) {
@@ -625,6 +635,8 @@ static int show_gitcomp(const struct option *opts, int show_all)
  *
  * Right now this is only used to preprocess and substitute
  * OPTION_ALIAS.
+ *
+ * The returned options should be freed using free_preprocessed_options.
  */
 static struct option *preprocess_options(struct parse_opt_ctx_t *ctx,
 					 const struct option *options)
@@ -678,6 +690,7 @@ static struct option *preprocess_options(struct parse_opt_ctx_t *ctx,
 			newopt[i].short_name = short_name;
 			newopt[i].long_name = long_name;
 			newopt[i].help = strbuf_detach(&help, NULL);
+			newopt[i].flags |= PARSE_OPT_FROM_ALIAS;
 			break;
 		}
 
@@ -693,13 +706,28 @@ static struct option *preprocess_options(struct parse_opt_ctx_t *ctx,
 	return newopt;
 }
 
-static int usage_with_options_internal(struct parse_opt_ctx_t *,
-				       const char * const *,
-				       const struct option *, int, int);
+static void free_preprocessed_options(struct option *options)
+{
+	int i;
 
-int parse_options_step(struct parse_opt_ctx_t *ctx,
-		       const struct option *options,
-		       const char * const usagestr[])
+	if (!options)
+		return;
+
+	for (i = 0; options[i].type != OPTION_END; i++) {
+		if (options[i].flags & PARSE_OPT_FROM_ALIAS)
+			free((void *)options[i].help);
+	}
+	free(options);
+}
+
+static enum parse_opt_result usage_with_options_internal(struct parse_opt_ctx_t *,
+							 const char * const *,
+							 const struct option *,
+							 int, int);
+
+enum parse_opt_result parse_options_step(struct parse_opt_ctx_t *ctx,
+					 const struct option *options,
+					 const char * const usagestr[])
 {
 	int internal_help = !(ctx->flags & PARSE_OPT_NO_INTERNAL_HELP);
 
@@ -833,9 +861,11 @@ int parse_options_end(struct parse_opt_ctx_t *ctx)
 	return ctx->cpidx + ctx->argc;
 }
 
-int parse_options(int argc, const char **argv, const char *prefix,
-		  const struct option *options, const char * const usagestr[],
-		  int flags)
+int parse_options(int argc, const char **argv,
+		  const char *prefix,
+		  const struct option *options,
+		  const char * const usagestr[],
+		  enum parse_opt_flags flags)
 {
 	struct parse_opt_ctx_t ctx;
 	struct option *real_options;
@@ -857,7 +887,7 @@ int parse_options(int argc, const char **argv, const char *prefix,
 	case PARSE_OPT_NON_OPTION:
 	case PARSE_OPT_DONE:
 		break;
-	default: /* PARSE_OPT_UNKNOWN */
+	case PARSE_OPT_UNKNOWN:
 		if (ctx.argv[0][1] == '-') {
 			error(_("unknown option `%s'"), ctx.argv[0] + 2);
 		} else if (isascii(*ctx.opt)) {
@@ -869,8 +899,8 @@ int parse_options(int argc, const char **argv, const char *prefix,
 		usage_with_options(usagestr, options);
 	}
 
-	precompose_argv(argc, argv);
-	free(real_options);
+	precompose_argv_prefix(argc, argv, NULL);
+	free_preprocessed_options(real_options);
 	free(ctx.alias_groups);
 	return parse_options_end(&ctx);
 }
@@ -893,12 +923,53 @@ static int usage_argh(const struct option *opts, FILE *outfile)
 #define USAGE_OPTS_WIDTH 24
 #define USAGE_GAP         2
 
-static int usage_with_options_internal(struct parse_opt_ctx_t *ctx,
-				       const char * const *usagestr,
-				       const struct option *opts, int full, int err)
+static enum parse_opt_result usage_with_options_internal(struct parse_opt_ctx_t *ctx,
+							 const char * const *usagestr,
+							 const struct option *opts,
+							 int full, int err)
 {
 	FILE *outfile = err ? stderr : stdout;
 	int need_newline;
+
+	const char *usage_prefix = _("usage: %s");
+	/*
+	 * The translation could be anything, but we can count on
+	 * msgfmt(1)'s --check option to have asserted that "%s" is in
+	 * the translation. So compute the length of the "usage: "
+	 * part. We are assuming that the translator wasn't overly
+	 * clever and used e.g. "%1$s" instead of "%s", there's only
+	 * one "%s" in "usage_prefix" above, so there's no reason to
+	 * do so even with a RTL language.
+	 */
+	size_t usage_len = strlen(usage_prefix) - strlen("%s");
+	/*
+	 * TRANSLATORS: the colon here should align with the
+	 * one in "usage: %s" translation.
+	 */
+	const char *or_prefix = _("   or: %s");
+	/*
+	 * TRANSLATORS: You should only need to translate this format
+	 * string if your language is a RTL language (e.g. Arabic,
+	 * Hebrew etc.), not if it's a LTR language (e.g. German,
+	 * Russian, Chinese etc.).
+	 *
+	 * When a translated usage string has an embedded "\n" it's
+	 * because options have wrapped to the next line. The line
+	 * after the "\n" will then be padded to align with the
+	 * command name, such as N_("git cmd [opt]\n<8
+	 * spaces>[opt2]"), where the 8 spaces are the same length as
+	 * "git cmd ".
+	 *
+	 * This format string prints out that already-translated
+	 * line. The "%*s" is whitespace padding to account for the
+	 * padding at the start of the line that we add in this
+	 * function. The "%s" is a line in the (hopefully already
+	 * translated) N_() usage string, which contained embedded
+	 * newlines before we split it up.
+	 */
+	const char *usage_continued = _("%*s%s");
+	const char *prefix = usage_prefix;
+	int saw_empty_line = 0;
 
 	if (!usagestr)
 		return PARSE_OPT_HELP;
@@ -906,19 +977,31 @@ static int usage_with_options_internal(struct parse_opt_ctx_t *ctx,
 	if (!err && ctx && ctx->flags & PARSE_OPT_SHELL_EVAL)
 		fprintf(outfile, "cat <<\\EOF\n");
 
-	fprintf_ln(outfile, _("usage: %s"), _(*usagestr++));
-	while (*usagestr && **usagestr)
-		/*
-		 * TRANSLATORS: the colon here should align with the
-		 * one in "usage: %s" translation.
-		 */
-		fprintf_ln(outfile, _("   or: %s"), _(*usagestr++));
 	while (*usagestr) {
-		if (**usagestr)
-			fprintf_ln(outfile, _("    %s"), _(*usagestr));
-		else
-			fputc('\n', outfile);
-		usagestr++;
+		const char *str = _(*usagestr++);
+		struct string_list list = STRING_LIST_INIT_DUP;
+		unsigned int j;
+
+		if (!saw_empty_line && !*str)
+			saw_empty_line = 1;
+
+		string_list_split(&list, str, '\n', -1);
+		for (j = 0; j < list.nr; j++) {
+			const char *line = list.items[j].string;
+
+			if (saw_empty_line && *line)
+				fprintf_ln(outfile, _("    %s"), line);
+			else if (saw_empty_line)
+				fputc('\n', outfile);
+			else if (!j)
+				fprintf_ln(outfile, prefix, line);
+			else
+				fprintf_ln(outfile, usage_continued,
+					   (int)usage_len, "", line);
+		}
+		string_list_clear(&list, 0);
+
+		prefix = or_prefix;
 	}
 
 	need_newline = 1;
@@ -995,19 +1078,4 @@ void NORETURN usage_msg_opt(const char *msg,
 {
 	fprintf(stderr, "fatal: %s\n\n", msg);
 	usage_with_options(usagestr, options);
-}
-
-const char *optname(const struct option *opt, int flags)
-{
-	static struct strbuf sb = STRBUF_INIT;
-
-	strbuf_reset(&sb);
-	if (flags & OPT_SHORT)
-		strbuf_addf(&sb, "switch `%c'", opt->short_name);
-	else if (flags & OPT_UNSET)
-		strbuf_addf(&sb, "option `no-%s'", opt->long_name);
-	else
-		strbuf_addf(&sb, "option `%s'", opt->long_name);
-
-	return sb.buf;
 }

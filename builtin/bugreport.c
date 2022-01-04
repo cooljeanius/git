@@ -3,7 +3,8 @@
 #include "strbuf.h"
 #include "help.h"
 #include "compat/compiler.h"
-#include "run-command.h"
+#include "hook.h"
+#include "hook-list.h"
 
 
 static void get_system_info(struct strbuf *sys_info)
@@ -41,39 +42,7 @@ static void get_system_info(struct strbuf *sys_info)
 
 static void get_populated_hooks(struct strbuf *hook_info, int nongit)
 {
-	/*
-	 * NEEDSWORK: Doesn't look like there is a list of all possible hooks;
-	 * so below is a transcription of `git help hooks`. Later, this should
-	 * be replaced with some programmatically generated list (generated from
-	 * doc or else taken from some library which tells us about all the
-	 * hooks)
-	 */
-	static const char *hook[] = {
-		"applypatch-msg",
-		"pre-applypatch",
-		"post-applypatch",
-		"pre-commit",
-		"pre-merge-commit",
-		"prepare-commit-msg",
-		"commit-msg",
-		"post-commit",
-		"pre-rebase",
-		"post-checkout",
-		"post-merge",
-		"pre-push",
-		"pre-receive",
-		"update",
-		"post-receive",
-		"post-update",
-		"push-to-checkout",
-		"pre-auto-gc",
-		"post-rewrite",
-		"sendemail-validate",
-		"fsmonitor-watchman",
-		"p4-pre-submit",
-		"post-index-change",
-	};
-	int i;
+	const char **p;
 
 	if (nongit) {
 		strbuf_addstr(hook_info,
@@ -81,9 +50,12 @@ static void get_populated_hooks(struct strbuf *hook_info, int nongit)
 		return;
 	}
 
-	for (i = 0; i < ARRAY_SIZE(hook); i++)
-		if (find_hook(hook[i]))
-			strbuf_addf(hook_info, "%s\n", hook[i]);
+	for (p = hook_name_list; *p; p++) {
+		const char *hook = *p;
+
+		if (hook_exists(hook))
+			strbuf_addf(hook_info, "%s\n", hook);
+	}
 }
 
 static const char * const bugreport_usage[] = {
@@ -125,9 +97,11 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 	struct strbuf report_path = STRBUF_INIT;
 	int report = -1;
 	time_t now = time(NULL);
+	struct tm tm;
 	char *option_output = NULL;
 	char *option_suffix = "%Y-%m-%d-%H%M";
 	const char *user_relative_path = NULL;
+	char *prefixed_filename;
 
 	const struct option bugreport_options[] = {
 		OPT_STRING('o', "output-directory", &option_output, N_("path"),
@@ -141,13 +115,13 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 			     bugreport_usage, 0);
 
 	/* Prepare the path to put the result */
-	strbuf_addstr(&report_path,
-		      prefix_filename(prefix,
-				      option_output ? option_output : ""));
+	prefixed_filename = prefix_filename(prefix,
+					    option_output ? option_output : "");
+	strbuf_addstr(&report_path, prefixed_filename);
 	strbuf_complete(&report_path, '/');
 
 	strbuf_addstr(&report_path, "git-bugreport-");
-	strbuf_addftime(&report_path, option_suffix, localtime(&now), 0, 0);
+	strbuf_addftime(&report_path, option_suffix, localtime_r(&now, &tm), 0, 0);
 	strbuf_addstr(&report_path, ".txt");
 
 	switch (safe_create_leading_directories(report_path.buf)) {
@@ -169,10 +143,7 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 	get_populated_hooks(&buffer, !startup_info->have_repository);
 
 	/* fopen doesn't offer us an O_EXCL alternative, except with glibc. */
-	report = open(report_path.buf, O_CREAT | O_EXCL | O_WRONLY, 0666);
-
-	if (report < 0)
-		die(_("couldn't create a new file at '%s'"), report_path.buf);
+	report = xopen(report_path.buf, O_CREAT | O_EXCL | O_WRONLY, 0666);
 
 	if (write_in_full(report, buffer.buf, buffer.len) < 0)
 		die_errno(_("unable to write to %s"), report_path.buf);
@@ -188,6 +159,7 @@ int cmd_bugreport(int argc, const char **argv, const char *prefix)
 	fprintf(stderr, _("Created new report at '%s'.\n"),
 		user_relative_path);
 
+	free(prefixed_filename);
 	UNLEAK(buffer);
 	UNLEAK(report_path);
 	return !!launch_editor(report_path.buf, NULL, NULL);

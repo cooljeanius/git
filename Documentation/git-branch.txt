@@ -9,7 +9,7 @@ SYNOPSIS
 --------
 [verse]
 'git branch' [--color[=<when>] | --no-color] [--show-current]
-	[-v [--abbrev=<length> | --no-abbrev]]
+	[-v [--abbrev=<n> | --no-abbrev]]
 	[--column[=<options>] | --no-column] [--sort=<key>]
 	[--merged [<commit>]] [--no-merged [<commit>]]
 	[--contains [<commit>]] [--no-contains [<commit>]]
@@ -78,8 +78,8 @@ renaming. If <newbranch> exists, -M must be used to force the rename
 to happen.
 
 The `-c` and `-C` options have the exact same semantics as `-m` and
-`-M`, except instead of the branch being renamed it along with its
-config and reflog will be copied to a new name.
+`-M`, except instead of the branch being renamed, it will be copied to a
+new name, along with its config and reflog.
 
 With a `-d` or `-D` option, `<branchname>` will be deleted.  You may
 specify more than one branch for deletion.  If the branch currently
@@ -118,20 +118,21 @@ OPTIONS
 	Reset <branchname> to <startpoint>, even if <branchname> exists
 	already. Without `-f`, 'git branch' refuses to change an existing branch.
 	In combination with `-d` (or `--delete`), allow deleting the
-	branch irrespective of its merged status. In combination with
+	branch irrespective of its merged status, or whether it even
+	points to a valid commit. In combination with
 	`-m` (or `--move`), allow renaming the branch even if the new
 	branch name already exists, the same applies for `-c` (or `--copy`).
 
 -m::
 --move::
-	Move/rename a branch and the corresponding reflog.
+	Move/rename a branch, together with its config and reflog.
 
 -M::
 	Shortcut for `--move --force`.
 
 -c::
 --copy::
-	Copy a branch and the corresponding reflog.
+	Copy a branch, together with its config and reflog.
 
 -C::
 	Shortcut for `--copy --force`.
@@ -153,7 +154,7 @@ OPTIONS
 --column[=<options>]::
 --no-column::
 	Display branch listing in columns. See configuration variable
-	column.branch for option syntax.`--column` and `--no-column`
+	`column.branch` for option syntax. `--column` and `--no-column`
 	without options are equivalent to 'always' and 'never' respectively.
 +
 This option is only applicable in non-verbose mode.
@@ -194,8 +195,10 @@ This option is only applicable in non-verbose mode.
 	Be more quiet when creating or deleting a branch, suppressing
 	non-error messages.
 
---abbrev=<length>::
-	Alter the sha1's minimum display length in the output listing.
+--abbrev=<n>::
+	In the verbose listing that show the commit object name,
+	show the shortest prefix that is at least '<n>' hexdigits
+	long that uniquely refers the object.
 	The default value is 7 and can be overridden by the `core.abbrev`
 	config option.
 

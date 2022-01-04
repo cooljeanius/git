@@ -50,6 +50,7 @@ extern "C" {
 
 /* xdemitconf_t.flags */
 #define XDL_EMIT_FUNCNAMES (1 << 0)
+#define XDL_EMIT_NO_HUNK_HDR (1 << 1)
 #define XDL_EMIT_FUNCCONTEXT (1 << 2)
 
 /* merge simplification levels */
@@ -65,6 +66,7 @@ extern "C" {
 
 /* merge output styles */
 #define XDL_MERGE_DIFF3 1
+#define XDL_MERGE_ZEALOUS_DIFF3 2
 
 typedef struct s_mmfile {
 	char *ptr;
@@ -78,6 +80,10 @@ typedef struct s_mmbuffer {
 
 typedef struct s_xpparam {
 	unsigned long flags;
+
+	/* -I<regex> */
+	regex_t **ignore_regex;
+	size_t ignore_regex_nr;
 
 	/* See Documentation/diff-options.txt. */
 	char **anchors;

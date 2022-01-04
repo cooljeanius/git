@@ -26,6 +26,16 @@ static void pack(int argc, const char **argv)
 	}
 }
 
+static void pack_raw_stdin(void)
+{
+	struct strbuf sb = STRBUF_INIT;
+
+	if (strbuf_read(&sb, 0, 0) < 0)
+		die_errno("failed to read from stdin");
+	packet_write(1, sb.buf, sb.len);
+	strbuf_release(&sb);
+}
+
 static void unpack(void)
 {
 	struct packet_reader reader;
@@ -84,6 +94,25 @@ static void unpack_sideband(void)
 	}
 }
 
+static int send_split_sideband(void)
+{
+	const char *part1 = "Hello,";
+	const char *primary = "\001primary: regular output\n";
+	const char *part2 = " world!\n";
+
+	send_sideband(1, 2, part1, strlen(part1), LARGE_PACKET_MAX);
+	packet_write(1, primary, strlen(primary));
+	send_sideband(1, 2, part2, strlen(part2), LARGE_PACKET_MAX);
+	packet_response_end(1);
+
+	return 0;
+}
+
+static int receive_sideband(void)
+{
+	return recv_sideband("sideband", 0, 1);
+}
+
 int cmd__pkt_line(int argc, const char **argv)
 {
 	if (argc < 2)
@@ -91,10 +120,16 @@ int cmd__pkt_line(int argc, const char **argv)
 
 	if (!strcmp(argv[1], "pack"))
 		pack(argc - 2, argv + 2);
+	else if (!strcmp(argv[1], "pack-raw-stdin"))
+		pack_raw_stdin();
 	else if (!strcmp(argv[1], "unpack"))
 		unpack();
 	else if (!strcmp(argv[1], "unpack-sideband"))
 		unpack_sideband();
+	else if (!strcmp(argv[1], "send-split-sideband"))
+		send_split_sideband();
+	else if (!strcmp(argv[1], "receive-sideband"))
+		receive_sideband();
 	else
 		die("invalid argument '%s'", argv[1]);
 

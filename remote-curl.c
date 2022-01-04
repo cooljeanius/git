@@ -44,7 +44,8 @@ struct options {
 		from_promisor : 1,
 
 		atomic : 1,
-		object_format : 1;
+		object_format : 1,
+		force_if_includes : 1;
 	const struct git_hash_algo *hash_algo;
 };
 static struct options options;
@@ -131,6 +132,14 @@ static int set_option(const char *name, const char *value)
 		string_list_append(&cas_options, val.buf);
 		strbuf_release(&val);
 		return 0;
+	} else if (!strcmp(name, TRANS_OPT_FORCE_IF_INCLUDES)) {
+		if (!strcmp(value, "true"))
+			options.force_if_includes = 1;
+		else if (!strcmp(value, "false"))
+			options.force_if_includes = 0;
+		else
+			return -1;
+		return 0;
 	} else if (!strcmp(name, "cloning")) {
 		if (!strcmp(value, "true"))
 			options.cloning = 1;
@@ -176,8 +185,6 @@ static int set_option(const char *name, const char *value)
 						 strbuf_detach(&unquoted, NULL));
 		}
 		return 0;
-
-#if LIBCURL_VERSION_NUM >= 0x070a08
 	} else if (!strcmp(name, "family")) {
 		if (!strcmp(value, "ipv4"))
 			git_curl_ipresolve = CURL_IPRESOLVE_V4;
@@ -188,7 +195,6 @@ static int set_option(const char *name, const char *value)
 		else
 			return -1;
 		return 0;
-#endif /* LIBCURL_VERSION_NUM >= 0x070a08 */
 	} else if (!strcmp(name, "from-promisor")) {
 		options.from_promisor = 1;
 		return 0;
@@ -493,6 +499,10 @@ static struct discovery *discover_refs(const char *service, int for_push)
 		show_http_message(&type, &charset, &buffer);
 		die(_("Authentication failed for '%s'"),
 		    transport_anonymize_url(url.buf));
+	case HTTP_NOMATCHPUBLICKEY:
+		show_http_message(&type, &charset, &buffer);
+		die(_("unable to access '%s' with http.pinnedPubkey configuration: %s"),
+		    transport_anonymize_url(url.buf), curl_errorstr);
 	default:
 		show_http_message(&type, &charset, &buffer);
 		die(_("unable to access '%s': %s"),
@@ -546,6 +556,8 @@ static void output_refs(struct ref *refs)
 	struct ref *posn;
 	if (options.object_format && options.hash_algo) {
 		printf(":object-format %s\n", options.hash_algo->name);
+		repo_set_hash_algo(the_repository,
+				hash_algo_by_ptr(options.hash_algo));
 	}
 	for (posn = refs; posn; posn = posn->next) {
 		if (posn->symref)
@@ -642,7 +654,7 @@ static int rpc_read_from_out(struct rpc_state *rpc, int options,
 			memcpy(buf - 4, "0000", 4);
 			break;
 		case PACKET_READ_RESPONSE_END:
-			die(_("remote server sent stateless separator"));
+			die(_("remote server sent unexpected response end packet"));
 		}
 	}
 
@@ -698,7 +710,6 @@ static size_t rpc_out(void *ptr, size_t eltsize,
 	return avail;
 }
 
-#ifndef NO_CURL_IOCTL
 static curlioerr rpc_ioctl(CURL *handle, int cmd, void *clientp)
 {
 	struct rpc_state *rpc = clientp;
@@ -719,7 +730,6 @@ static curlioerr rpc_ioctl(CURL *handle, int cmd, void *clientp)
 		return CURLIOE_UNKNOWNCMD;
 	}
 }
-#endif
 
 struct check_pktline_state {
 	char len_buf[4];
@@ -847,7 +857,7 @@ static int probe_rpc(struct rpc_state *rpc, struct slot_results *results)
 	curl_easy_setopt(slot->curl, CURLOPT_POSTFIELDSIZE, 4);
 	curl_easy_setopt(slot->curl, CURLOPT_HTTPHEADER, headers);
 	curl_easy_setopt(slot->curl, CURLOPT_WRITEFUNCTION, fwrite_buffer);
-	curl_easy_setopt(slot->curl, CURLOPT_FILE, &buf);
+	curl_easy_setopt(slot->curl, CURLOPT_WRITEDATA, &buf);
 
 	err = run_slot(slot, results);
 
@@ -938,10 +948,8 @@ retry:
 		rpc->initial_buffer = 1;
 		curl_easy_setopt(slot->curl, CURLOPT_READFUNCTION, rpc_out);
 		curl_easy_setopt(slot->curl, CURLOPT_INFILE, rpc);
-#ifndef NO_CURL_IOCTL
 		curl_easy_setopt(slot->curl, CURLOPT_IOCTLFUNCTION, rpc_ioctl);
 		curl_easy_setopt(slot->curl, CURLOPT_IOCTLDATA, rpc);
-#endif
 		if (options.verbosity > 1) {
 			fprintf(stderr, "POST %s (chunked)\n", rpc->service_name);
 			fflush(stderr);
@@ -1012,7 +1020,7 @@ retry:
 	rpc_in_data.slot = slot;
 	rpc_in_data.check_pktline = stateless_connect;
 	memset(&rpc_in_data.pktline_state, 0, sizeof(rpc_in_data.pktline_state));
-	curl_easy_setopt(slot->curl, CURLOPT_FILE, &rpc_in_data);
+	curl_easy_setopt(slot->curl, CURLOPT_WRITEDATA, &rpc_in_data);
 	curl_easy_setopt(slot->curl, CURLOPT_FAILONERROR, 0);
 
 
@@ -1053,7 +1061,7 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads,
 	client.in = -1;
 	client.out = -1;
 	client.git_cmd = 1;
-	client.argv = client_argv;
+	strvec_pushv(&client.args, client_argv);
 	if (start_command(&client))
 		exit(1);
 	write_or_die(client.in, preamble->buf, preamble->len);
@@ -1080,7 +1088,7 @@ static int rpc_service(struct rpc_state *rpc, struct discovery *heads,
 		rpc->protocol_header = NULL;
 
 	while (!err) {
-		int n = packet_read(rpc->out, NULL, NULL, rpc->buf, rpc->alloc, 0);
+		int n = packet_read(rpc->out, rpc->buf, rpc->alloc, 0);
 		if (!n)
 			break;
 		rpc->pos = 0;
@@ -1318,6 +1326,9 @@ static int push_git(struct discovery *heads, int nr_spec, const char **specs)
 		strvec_push(&args, cas_option->string);
 	strvec_push(&args, url.buf);
 
+	if (options.force_if_includes)
+		strvec_push(&args, "--force-if-includes");
+
 	strvec_push(&args, "--stdin");
 	for (i = 0; i < nr_spec; i++)
 		packet_buf_write(&preamble, "%s\n", specs[i]);
@@ -1471,8 +1482,8 @@ int cmd_main(int argc, const char **argv)
 	options.verbosity = 1;
 	options.progress = !!isatty(2);
 	options.thin = 1;
-	string_list_init(&options.deepen_not, 1);
-	string_list_init(&options.push_options, 1);
+	string_list_init_dup(&options.deepen_not);
+	string_list_init_dup(&options.push_options);
 
 	/*
 	 * Just report "remote-curl" here (folding all the various aliases

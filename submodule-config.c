@@ -103,8 +103,8 @@ static void submodule_cache_clear(struct submodule_cache *cache)
 				ent /* member name */)
 		free_one_config(entry);
 
-	hashmap_free_entries(&cache->for_path, struct submodule_entry, ent);
-	hashmap_free_entries(&cache->for_name, struct submodule_entry, ent);
+	hashmap_clear_and_free(&cache->for_path, struct submodule_entry, ent);
+	hashmap_clear_and_free(&cache->for_name, struct submodule_entry, ent);
 	cache->initialized = 0;
 	cache->gitmodules_read = 0;
 }
@@ -649,9 +649,10 @@ static void config_from_gitmodules(config_fn_t fn, struct repository *repo, void
 			config_source.file = file;
 		} else if (repo_get_oid(repo, GITMODULES_INDEX, &oid) >= 0 ||
 			   repo_get_oid(repo, GITMODULES_HEAD, &oid) >= 0) {
+			config_source.repo = repo;
 			config_source.blob = oidstr = xstrdup(oid_to_hex(&oid));
 			if (repo != the_repository)
-				add_to_alternates_memory(repo->objects->odb->path);
+				add_submodule_odb_by_path(repo->objects->odb->path);
 		} else {
 			goto out;
 		}
@@ -671,7 +672,7 @@ static int gitmodules_cb(const char *var, const char *value, void *data)
 
 	parameter.cache = repo->submodule_cache;
 	parameter.treeish_name = NULL;
-	parameter.gitmodules_oid = &null_oid;
+	parameter.gitmodules_oid = null_oid();
 	parameter.overwrite = 1;
 
 	return parse_config(var, value, &parameter);
@@ -702,7 +703,7 @@ void gitmodules_config_oid(const struct object_id *commit_oid)
 
 	if (gitmodule_oid_from_commit(commit_oid, &oid, &rev)) {
 		git_config_from_blob_oid(gitmodules_cb, rev.buf,
-					 &oid, the_repository);
+					 the_repository, &oid, the_repository);
 	}
 	strbuf_release(&rev);
 

@@ -95,9 +95,7 @@ static int create_file(const char *path)
 {
 	int fd;
 	path = get_mtime_path(path);
-	fd = open(path, O_CREAT | O_RDWR, 0644);
-	if (fd < 0)
-		die_errno(_("failed to create file %s"), path);
+	fd = xopen(path, O_CREAT | O_RDWR, 0644);
 	return fd;
 }
 
@@ -745,6 +743,8 @@ static int do_reupdate(int ac, const char **av,
 		 */
 		has_head = 0;
  redo:
+	/* TODO: audit for interaction with sparse-index. */
+	ensure_full_index(&the_index);
 	for (pos = 0; pos < active_nr; pos++) {
 		const struct cache_entry *ce = active_cache[pos];
 		struct cache_entry *old = NULL;

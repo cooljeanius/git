@@ -176,14 +176,12 @@ struct path_cache {
 	const char *merge_mode;
 	const char *merge_head;
 	const char *merge_autostash;
+	const char *auto_merge;
 	const char *fetch_head;
 	const char *shallow;
 };
 
-#define PATH_CACHE_INIT                                        \
-	{                                                      \
-		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL \
-	}
+#define PATH_CACHE_INIT { 0 }
 
 const char *git_path_squash_msg(struct repository *r);
 const char *git_path_merge_msg(struct repository *r);
@@ -191,6 +189,7 @@ const char *git_path_merge_rr(struct repository *r);
 const char *git_path_merge_mode(struct repository *r);
 const char *git_path_merge_head(struct repository *r);
 const char *git_path_merge_autostash(struct repository *r);
+const char *git_path_auto_merge(struct repository *r);
 const char *git_path_fetch_head(struct repository *r);
 const char *git_path_shallow(struct repository *r);
 

@@ -5,6 +5,10 @@
 
 test_description='Test commit notes index (expensive!)'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 create_repo () {
@@ -20,7 +24,7 @@ create_repo () {
 			notemark=$(($mark+1))
 			test_tick &&
 			cat <<-INPUT_END &&
-			commit refs/heads/master
+			commit refs/heads/main
 			mark :$mark
 			committer $GIT_COMMITTER_NAME <$GIT_COMMITTER_EMAIL> $GIT_COMMITTER_DATE
 			data <<COMMIT

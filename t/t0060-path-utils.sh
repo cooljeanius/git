@@ -216,7 +216,7 @@ test_expect_success SYMLINKS 'real path works on symlinks' '
 	mkdir second &&
 	ln -s ../first second/other &&
 	mkdir third &&
-	dir="$(cd .git; pwd -P)" &&
+	dir="$(cd .git && pwd -P)" &&
 	dir2=third/../second/other/.git &&
 	test "$dir" = "$(test-tool path-utils real_path $dir2)" &&
 	file="$dir"/index &&
@@ -224,7 +224,7 @@ test_expect_success SYMLINKS 'real path works on symlinks' '
 	basename=blub &&
 	test "$dir/$basename" = "$(cd .git && test-tool path-utils real_path "$basename")" &&
 	ln -s ../first/file .git/syml &&
-	sym="$(cd first; pwd -P)"/file &&
+	sym="$(cd first && pwd -P)"/file &&
 	test "$sym" = "$(test-tool path-utils real_path "$dir2/syml")"
 '
 
@@ -312,8 +312,8 @@ test_git_path GIT_COMMON_DIR=bar info/sparse-checkout     .git/info/sparse-check
 test_git_path GIT_COMMON_DIR=bar info//sparse-checkout    .git/info//sparse-checkout
 test_git_path GIT_COMMON_DIR=bar remotes/bar              bar/remotes/bar
 test_git_path GIT_COMMON_DIR=bar branches/bar             bar/branches/bar
-test_git_path GIT_COMMON_DIR=bar logs/refs/heads/master   bar/logs/refs/heads/master
-test_git_path GIT_COMMON_DIR=bar refs/heads/master        bar/refs/heads/master
+test_git_path GIT_COMMON_DIR=bar logs/refs/heads/main     bar/logs/refs/heads/main
+test_git_path GIT_COMMON_DIR=bar refs/heads/main          bar/refs/heads/main
 test_git_path GIT_COMMON_DIR=bar refs/bisect/foo          .git/refs/bisect/foo
 test_git_path GIT_COMMON_DIR=bar hooks/me                 bar/hooks/me
 test_git_path GIT_COMMON_DIR=bar config                   bar/config
@@ -468,6 +468,36 @@ test_expect_success 'match .gitmodules' '
 		.gitmodules,:\$DATA
 '
 
+test_expect_success 'match .gitattributes' '
+	test-tool path-utils is_dotgitattributes \
+		.gitattributes \
+		.git${u200c}attributes \
+		.Gitattributes \
+		.gitattributeS \
+		GITATT~1 \
+		GI7D29~1
+'
+
+test_expect_success 'match .gitignore' '
+	test-tool path-utils is_dotgitignore \
+		.gitignore \
+		.git${u200c}ignore \
+		.Gitignore \
+		.gitignorE \
+		GITIGN~1 \
+		GI250A~1
+'
+
+test_expect_success 'match .mailmap' '
+	test-tool path-utils is_dotmailmap \
+		.mailmap \
+		.mail${u200c}map \
+		.Mailmap \
+		.mailmaP \
+		MAILMA~1 \
+		MABA30~1
+'
+
 test_expect_success MINGW 'is_valid_path() on Windows' '
 	test-tool path-utils is_valid_path \
 		win32 \
@@ -493,6 +523,32 @@ test_expect_success MINGW 'is_valid_path() on Windows' '
 		"lpt*" \
 		Nul \
 		"PRN./abc"
+'
+
+test_lazy_prereq RUNTIME_PREFIX '
+	test true = "$RUNTIME_PREFIX"
+'
+
+test_lazy_prereq CAN_EXEC_IN_PWD '
+	cp "$GIT_EXEC_PATH"/git$X ./ &&
+	./git rev-parse
+'
+
+test_expect_success RUNTIME_PREFIX,CAN_EXEC_IN_PWD 'RUNTIME_PREFIX works' '
+	mkdir -p pretend/bin pretend/libexec/git-core &&
+	echo "echo HERE" | write_script pretend/libexec/git-core/git-here &&
+	cp "$GIT_EXEC_PATH"/git$X pretend/bin/ &&
+	GIT_EXEC_PATH= ./pretend/bin/git here >actual &&
+	echo HERE >expect &&
+	test_cmp expect actual'
+
+test_expect_success RUNTIME_PREFIX,CAN_EXEC_IN_PWD '%(prefix)/ works' '
+	mkdir -p pretend/bin &&
+	cp "$GIT_EXEC_PATH"/git$X pretend/bin/ &&
+	git config yes.path "%(prefix)/yes" &&
+	GIT_EXEC_PATH= ./pretend/bin/git config --path yes.path >actual &&
+	echo "$(pwd)/pretend/yes" >expect &&
+	test_cmp expect actual
 '
 
 test_done

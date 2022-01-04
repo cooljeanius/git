@@ -1,6 +1,8 @@
 #!/bin/sh
 
 test_description='test trace2 facility (normal target)'
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # Turn off any inherited trace2 settings for this test.
@@ -143,6 +145,25 @@ test_expect_success 'normal stream, error event' '
 		error this is a test
 		exit elapsed:_TIME_ code:0
 		atexit elapsed:_TIME_ code:0
+	EOF
+	test_cmp expect actual
+'
+
+# Verb 007bug
+#
+# Check that BUG writes to trace2
+
+test_expect_success 'BUG messages are written to trace2' '
+	test_when_finished "rm trace.normal actual expect" &&
+	test_must_fail env GIT_TRACE2="$(pwd)/trace.normal" test-tool trace2 007bug &&
+	perl "$TEST_DIRECTORY/t0210/scrub_normal.perl" <trace.normal >actual &&
+	cat >expect <<-EOF &&
+		version $V
+		start _EXE_ trace2 007bug
+		cmd_name trace2 (trace2)
+		error the bug message
+		exit elapsed:_TIME_ code:99
+		atexit elapsed:_TIME_ code:99
 	EOF
 	test_cmp expect actual
 '

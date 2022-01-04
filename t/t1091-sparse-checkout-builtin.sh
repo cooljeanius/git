@@ -2,6 +2,9 @@
 
 test_description='sparse checkout builtin tests'
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 list_files() {
@@ -38,7 +41,15 @@ test_expect_success 'setup' '
 	)
 '
 
-test_expect_success 'git sparse-checkout list (empty)' '
+test_expect_success 'git sparse-checkout list (not sparse)' '
+	test_must_fail git -C repo sparse-checkout list >list 2>err &&
+	test_must_be_empty list &&
+	test_i18ngrep "this worktree is not sparse" err
+'
+
+test_expect_success 'git sparse-checkout list (not sparse)' '
+	git -C repo sparse-checkout set &&
+	rm repo/.git/info/sparse-checkout &&
 	git -C repo sparse-checkout list >list 2>err &&
 	test_must_be_empty list &&
 	test_i18ngrep "this worktree is not sparse (sparse-checkout file may not exist)" err
@@ -117,7 +128,7 @@ test_expect_success 'interaction with clone --no-checkout (unborn index)' '
 	test_path_is_missing clone_no_checkout/.git/index &&
 
 	# No branch is checked out until we manually switch to one
-	git -C clone_no_checkout switch master &&
+	git -C clone_no_checkout switch main &&
 	test_path_is_file clone_no_checkout/.git/index &&
 	check_files clone_no_checkout a folder1
 '
@@ -200,6 +211,24 @@ test_expect_success 'sparse-checkout disable' '
 	git -C repo config --list >config &&
 	test_must_fail git config core.sparseCheckout &&
 	check_files repo a deep folder1 folder2
+'
+
+test_expect_success 'sparse-index enabled and disabled' '
+	(
+		sane_unset GIT_TEST_SPLIT_INDEX &&
+		git -C repo update-index --no-split-index &&
+
+		git -C repo sparse-checkout init --cone --sparse-index &&
+		test_cmp_config -C repo true index.sparse &&
+		test-tool -C repo read-cache --table >cache &&
+		grep " tree " cache &&
+
+		git -C repo sparse-checkout disable &&
+		test-tool -C repo read-cache --table >cache &&
+		! grep " tree " cache &&
+		git -C repo config --list >config &&
+		! grep index.sparse config
+	)
 '
 
 test_expect_success 'cone mode: init and set' '
@@ -390,7 +419,7 @@ test_expect_success 'sparse-checkout (init|set|disable) warns with unmerged stat
 	git -C unmerged sparse-checkout disable
 '
 
-test_expect_success 'sparse-checkout reapply' '
+test_expect_failure 'sparse-checkout reapply' '
 	git clone repo tweak &&
 
 	echo dirty >tweak/deep/deeper2/a &&
@@ -422,6 +451,8 @@ test_expect_success 'sparse-checkout reapply' '
 	test_i18ngrep "warning.*The following paths are unmerged" err &&
 	test_path_is_file tweak/folder1/a &&
 
+	# NEEDSWORK: We are asking to update a file outside of the
+	# sparse-checkout cone, but this is no longer allowed.
 	git -C tweak add folder1/a &&
 	git -C tweak sparse-checkout reapply 2>err &&
 	test_must_be_empty err &&
@@ -563,7 +594,7 @@ test_expect_success 'pattern-checks: contained glob characters' '
 		!/*/
 		something$c-else/
 		EOF
-		check_read_tree_errors repo "a" "disabling cone pattern matching"
+		check_read_tree_errors repo "a" "disabling cone pattern matching" || return 1
 	done
 '
 
@@ -624,6 +655,65 @@ test_expect_success MINGW 'cone mode replaces backslashes with slashes' '
 	test_cmp expect repo/.git/info/sparse-checkout &&
 	check_files repo a deep &&
 	check_files repo/deep a deeper1
+'
+
+test_expect_success 'cone mode clears ignored subdirectories' '
+	rm repo/.git/info/sparse-checkout &&
+
+	git -C repo sparse-checkout init --cone &&
+	git -C repo sparse-checkout set deep/deeper1 &&
+
+	cat >repo/.gitignore <<-\EOF &&
+	obj/
+	*.o
+	EOF
+
+	git -C repo add .gitignore &&
+	git -C repo commit -m ".gitignore" &&
+
+	mkdir -p repo/obj repo/folder1/obj repo/deep/deeper2/obj &&
+	for file in folder1/obj/a obj/a folder1/file.o folder1.o \
+		    deep/deeper2/obj/a deep/deeper2/file.o file.o
+	do
+		echo ignored >repo/$file || return 1
+	done &&
+
+	git -C repo status --porcelain=v2 >out &&
+	test_must_be_empty out &&
+
+	git -C repo sparse-checkout reapply &&
+	test_path_is_missing repo/folder1 &&
+	test_path_is_missing repo/deep/deeper2 &&
+	test_path_is_dir repo/obj &&
+	test_path_is_file repo/file.o &&
+
+	git -C repo status --porcelain=v2 >out &&
+	test_must_be_empty out &&
+
+	git -C repo sparse-checkout set deep/deeper2 &&
+	test_path_is_missing repo/deep/deeper1 &&
+	test_path_is_dir repo/deep/deeper2 &&
+	test_path_is_dir repo/obj &&
+	test_path_is_file repo/file.o &&
+
+	>repo/deep/deeper2/ignored.o &&
+	>repo/deep/deeper2/untracked &&
+
+	# When an untracked file is in the way, all untracked files
+	# (even ignored files) are preserved.
+	git -C repo sparse-checkout set folder1 2>err &&
+	grep "contains untracked files" err &&
+	test_path_is_file repo/deep/deeper2/ignored.o &&
+	test_path_is_file repo/deep/deeper2/untracked &&
+
+	# The rest of the cone matches expectation
+	test_path_is_missing repo/deep/deeper1 &&
+	test_path_is_dir repo/obj &&
+	test_path_is_file repo/file.o &&
+
+	git -C repo status --porcelain=v2 >out &&
+	echo "? deep/deeper2/untracked" >expect &&
+	test_cmp expect out
 '
 
 test_done

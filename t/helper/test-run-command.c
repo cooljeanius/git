@@ -31,7 +31,7 @@ static int parallel_next(struct child_process *cp,
 	if (number_callbacks >= 4)
 		return 0;
 
-	strvec_pushv(&cp->args, d->argv);
+	strvec_pushv(&cp->args, d->args.v);
 	strbuf_addstr(err, "preloaded output of a child\n");
 	number_callbacks++;
 	return 1;
@@ -60,8 +60,10 @@ struct testsuite {
 	int next;
 	int quiet, immediate, verbose, verbose_log, trace, write_junit_xml;
 };
-#define TESTSUITE_INIT \
-	{ STRING_LIST_INIT_DUP, STRING_LIST_INIT_DUP, -1, 0, 0, 0, 0, 0, 0 }
+#define TESTSUITE_INIT { \
+	.tests = STRING_LIST_INIT_DUP, \
+	.failed = STRING_LIST_INIT_DUP, \
+}
 
 static int next_test(struct child_process *cp, struct strbuf *err, void *cb,
 		     void **task_cb)
@@ -141,9 +143,6 @@ static int testsuite(int argc, const char **argv)
 			 "write JUnit-style XML files"),
 		OPT_END()
 	};
-
-	memset(&suite, 0, sizeof(suite));
-	suite.tests.strdup_strings = suite.failed.strdup_strings = 1;
 
 	argc = parse_options(argc, argv, NULL, options,
 			testsuite_usage, PARSE_OPT_STOP_AT_NON_OPTION);
@@ -275,7 +274,7 @@ static int quote_stress_test(int argc, const char **argv)
 		if (i < skip)
 			continue;
 
-		cp.argv = args.v;
+		strvec_pushv(&cp.args, args.v);
 		strbuf_reset(&out);
 		if (pipe_command(&cp, NULL, 0, &out, 0, NULL, 0) < 0)
 			return error("Failed to spawn child process");
@@ -397,7 +396,7 @@ int cmd__run_command(int argc, const char **argv)
 	}
 	if (argc < 3)
 		return 1;
-	proc.argv = (const char **)argv + 2;
+	strvec_pushv(&proc.args, (const char **)argv + 2);
 
 	if (!strcmp(argv[1], "start-command-ENOENT")) {
 		if (start_command(&proc) < 0 && errno == ENOENT)
@@ -409,7 +408,8 @@ int cmd__run_command(int argc, const char **argv)
 		exit(run_command(&proc));
 
 	jobs = atoi(argv[2]);
-	proc.argv = (const char **)argv + 3;
+	strvec_clear(&proc.args);
+	strvec_pushv(&proc.args, (const char **)argv + 3);
 
 	if (!strcmp(argv[1], "run-command-parallel"))
 		exit(run_processes_parallel(jobs, parallel_next,

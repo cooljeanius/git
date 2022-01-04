@@ -1,6 +1,9 @@
 #!/bin/sh
 
 test_description='check pre-push hooks'
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 # Setup hook that always succeeds
@@ -48,11 +51,11 @@ EOF
 cat >expected <<EOF
 parent1
 repo1
-refs/heads/master $COMMIT2 refs/heads/foreign $COMMIT1
+refs/heads/main $COMMIT2 refs/heads/foreign $COMMIT1
 EOF
 
 test_expect_success 'push with hook' '
-	git push parent1 master:foreign &&
+	git push parent1 main:foreign &&
 	diff expected actual
 '
 
@@ -111,11 +114,11 @@ test_expect_success 'push to URL' '
 
 test_expect_success 'set up many-ref tests' '
 	{
-		nr=1000
+		nr=1000 &&
 		while test $nr -lt 2000
 		do
-			nr=$(( $nr + 1 ))
-			echo "create refs/heads/b/$nr $COMMIT3"
+			nr=$(( $nr + 1 )) &&
+			echo "create refs/heads/b/$nr $COMMIT3" || return 1
 		done
 	} | git update-ref --stdin
 '

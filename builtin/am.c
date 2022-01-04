@@ -11,6 +11,7 @@
 #include "parse-options.h"
 #include "dir.h"
 #include "run-command.h"
+#include "hook.h"
 #include "quote.h"
 #include "tempfile.h"
 #include "lockfile.h"
@@ -98,8 +99,6 @@ struct am_state {
 	char *author_name;
 	char *author_email;
 	char *author_date;
-	char *committer_name;
-	char *committer_email;
 	char *msg;
 	size_t msg_len;
 
@@ -118,6 +117,7 @@ struct am_state {
 	int keep; /* enum keep_type */
 	int message_id;
 	int scissors; /* enum scissors_type */
+	int quoted_cr; /* enum quoted_cr_action */
 	struct strvec git_apply_opts;
 	const char *resolvemsg;
 	int committer_date_is_author_date;
@@ -132,8 +132,6 @@ struct am_state {
  */
 static void am_state_init(struct am_state *state)
 {
-	const char *committer;
-	struct ident_split id;
 	int gpgsign;
 
 	memset(state, 0, sizeof(*state));
@@ -149,19 +147,12 @@ static void am_state_init(struct am_state *state)
 	git_config_get_bool("am.messageid", &state->message_id);
 
 	state->scissors = SCISSORS_UNSET;
+	state->quoted_cr = quoted_cr_unset;
 
 	strvec_init(&state->git_apply_opts);
 
 	if (!git_config_get_bool("commit.gpgsign", &gpgsign))
 		state->sign_commit = gpgsign ? "" : NULL;
-
-	committer = git_committer_info(IDENT_STRICT);
-	if (split_ident_line(&id, committer, strlen(committer)) < 0)
-		die(_("invalid committer: %s"), committer);
-	state->committer_name =
-		xmemdupz(id.name_begin, id.name_end - id.name_begin);
-	state->committer_email =
-		xmemdupz(id.mail_begin, id.mail_end - id.mail_end);
 }
 
 /**
@@ -173,10 +164,18 @@ static void am_state_release(struct am_state *state)
 	free(state->author_name);
 	free(state->author_email);
 	free(state->author_date);
-	free(state->committer_name);
-	free(state->committer_email);
 	free(state->msg);
 	strvec_clear(&state->git_apply_opts);
+}
+
+static int am_option_parse_quoted_cr(const struct option *opt,
+				     const char *arg, int unset)
+{
+	BUG_ON_OPT_NEG(unset);
+
+	if (mailinfo_parse_quoted_cr_action(arg, opt->value) != 0)
+		return error(_("bad action '%s' for '%s'"), arg, "--quoted-cr");
+	return 0;
 }
 
 /**
@@ -212,6 +211,7 @@ static void write_state_bool(const struct am_state *state,
  * If state->quiet is false, calls fprintf(fp, fmt, ...), and appends a newline
  * at the end.
  */
+__attribute__((format (printf, 3, 4)))
 static void say(const struct am_state *state, FILE *fp, const char *fmt, ...)
 {
 	va_list ap;
@@ -410,6 +410,12 @@ static void am_load(struct am_state *state)
 		state->scissors = SCISSORS_FALSE;
 	else
 		state->scissors = SCISSORS_UNSET;
+
+	read_state_file(&sb, state, "quoted-cr", 1);
+	if (!*sb.buf)
+		state->quoted_cr = quoted_cr_unset;
+	else if (mailinfo_parse_quoted_cr_action(sb.buf, &state->quoted_cr) != 0)
+		die(_("could not parse %s"), am_path(state, "quoted-cr"));
 
 	read_state_file(&sb, state, "apply-opt", 1);
 	strvec_clear(&state->git_apply_opts);
@@ -1016,6 +1022,24 @@ static void am_setup(struct am_state *state, enum patch_format patch_format,
 	}
 	write_state_text(state, "scissors", str);
 
+	switch (state->quoted_cr) {
+	case quoted_cr_unset:
+		str = "";
+		break;
+	case quoted_cr_nowarn:
+		str = "nowarn";
+		break;
+	case quoted_cr_warn:
+		str = "warn";
+		break;
+	case quoted_cr_strip:
+		str = "strip";
+		break;
+	default:
+		BUG("invalid value for state->quoted_cr");
+	}
+	write_state_text(state, "quoted-cr", str);
+
 	sq_quote_argv(&sb, state->git_apply_opts.v);
 	write_state_text(state, "apply-opt", sb.buf);
 
@@ -1174,6 +1198,18 @@ static int parse_mail(struct am_state *state, const char *mail)
 		break;
 	default:
 		BUG("invalid value for state->scissors");
+	}
+
+	switch (state->quoted_cr) {
+	case quoted_cr_unset:
+		break;
+	case quoted_cr_nowarn:
+	case quoted_cr_warn:
+	case quoted_cr_strip:
+		mi.quoted_cr = state->quoted_cr;
+		break;
+	default:
+		BUG("invalid value for state->quoted_cr");
 	}
 
 	mi.input = xfopen(mail, "r");
@@ -1594,8 +1630,9 @@ static void do_commit(const struct am_state *state)
 			IDENT_STRICT);
 
 	if (state->committer_date_is_author_date)
-		committer = fmt_ident(state->committer_name,
-				      state->author_email, WANT_COMMITTER_IDENT,
+		committer = fmt_ident(getenv("GIT_COMMITTER_NAME"),
+				      getenv("GIT_COMMITTER_EMAIL"),
+				      WANT_COMMITTER_IDENT,
 				      state->ignore_date ? NULL
 							 : state->author_date,
 				      IDENT_STRICT);
@@ -1784,7 +1821,7 @@ static void am_run(struct am_state *state, int resume)
 			printf_ln(_("Patch failed at %s %.*s"), msgnum(state),
 				linelen(state->msg), state->msg);
 
-			if (advice_amworkdir)
+			if (advice_enabled(ADVICE_AM_WORK_DIR))
 				advise(_("Use 'git am --show-current-patch=diff' to see the failed patch"));
 
 			die_user_resolve(state);
@@ -1812,8 +1849,7 @@ next:
 	 */
 	if (!state->rebasing) {
 		am_destroy(state);
-		close_object_store(the_repository->objects);
-		run_auto_gc(state->quiet);
+		run_auto_maintenance(state->quiet);
 	}
 }
 
@@ -1882,7 +1918,8 @@ static int fast_forward_to(struct tree *head, struct tree *remote, int reset)
 	opts.dst_index = &the_index;
 	opts.update = 1;
 	opts.merge = 1;
-	opts.reset = reset;
+	opts.reset = reset ? UNPACK_RESET_PROTECT_UNTRACKED : 0;
+	opts.preserve_ignored = 0; /* FIXME: !overwrite_ignore */
 	opts.fn = twoway_merge;
 	init_tree_desc(&t[0], head->buffer, head->size);
 	init_tree_desc(&t[1], remote->buffer, remote->size);
@@ -2070,7 +2107,8 @@ static void am_abort(struct am_state *state)
 	if (!has_orig_head)
 		oidcpy(&orig_head, the_hash_algo->empty_tree);
 
-	clean_index(&curr_head, &orig_head);
+	if (clean_index(&curr_head, &orig_head))
+		die(_("failed to clean index"));
 
 	if (has_orig_head)
 		update_ref("am --abort", "HEAD", &orig_head,
@@ -2180,6 +2218,8 @@ static int parse_opt_show_current_patch(const struct option *opt, const char *ar
 	};
 	int new_value = SHOW_PATCH_RAW;
 
+	BUG_ON_OPT_NEG(unset);
+
 	if (arg) {
 		for (new_value = 0; new_value < ARRAY_SIZE(valid_modes); new_value++) {
 			if (!strcmp(arg, valid_modes[new_value]))
@@ -2235,7 +2275,7 @@ int cmd_am(int argc, const char **argv, const char *prefix)
 			N_("allow fall back on 3way merging if needed")),
 		OPT__QUIET(&state.quiet, N_("be quiet")),
 		OPT_SET_INT('s', "signoff", &state.signoff,
-			N_("add a Signed-off-by line to the commit message"),
+			N_("add a Signed-off-by trailer to the commit message"),
 			SIGNOFF_EXPLICIT),
 		OPT_BOOL('u', "utf8", &state.utf8,
 			N_("recode into utf8 (default)")),
@@ -2253,6 +2293,9 @@ int cmd_am(int argc, const char **argv, const char *prefix)
 			0, PARSE_OPT_NONEG),
 		OPT_BOOL('c', "scissors", &state.scissors,
 			N_("strip everything before a scissors line")),
+		OPT_CALLBACK_F(0, "quoted-cr", &state.quoted_cr, N_("action"),
+			       N_("pass it through git-mailinfo"),
+			       PARSE_OPT_NONEG, am_option_parse_quoted_cr),
 		OPT_PASSTHRU_ARGV(0, "whitespace", &state.git_apply_opts, N_("action"),
 			N_("pass it through git-apply"),
 			0),
@@ -2295,10 +2338,10 @@ int cmd_am(int argc, const char **argv, const char *prefix)
 			N_("skip the current patch"),
 			RESUME_SKIP),
 		OPT_CMDMODE(0, "abort", &resume.mode,
-			N_("restore the original branch and abort the patching operation."),
+			N_("restore the original branch and abort the patching operation"),
 			RESUME_ABORT),
 		OPT_CMDMODE(0, "quit", &resume.mode,
-			N_("abort the patching operation but keep HEAD where it is."),
+			N_("abort the patching operation but keep HEAD where it is"),
 			RESUME_QUIT),
 		{ OPTION_CALLBACK, 0, "show-current-patch", &resume.mode,
 		  "(diff|raw)",

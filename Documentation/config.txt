@@ -46,7 +46,7 @@ Subsection names are case sensitive and can contain any characters except
 newline and the null byte. Doublequote `"` and backslash can be included
 by escaping them as `\"` and `\\`, respectively. Backslashes preceding
 other characters are dropped when reading; for example, `\t` is read as
-`t` and `\0` is read as `0` Section headers cannot span multiple lines.
+`t` and `\0` is read as `0`. Section headers cannot span multiple lines.
 Variables may belong directly to a section or to a given subsection. You
 can have `[section]` if you have `[section "subsection"]`, but you don't
 need to.
@@ -64,7 +64,7 @@ The variable names are case-insensitive, allow only alphanumeric characters
 and `-`, and must start with an alphabetic character.
 
 A line that defines a value can be continued to the next line by
-ending it with a `\`; the backquote and the end-of-line are
+ending it with a `\`; the backslash and the end-of-line are
 stripped.  Leading whitespaces after 'name =', the remainder of the
 line after the first comment character '#' or ';', and trailing
 whitespaces of the line are discarded unless they are enclosed in
@@ -262,11 +262,19 @@ color::
        colors (at most two, one for foreground and one for background)
        and attributes (as many as you want), separated by spaces.
 +
-The basic colors accepted are `normal`, `black`, `red`, `green`, `yellow`,
-`blue`, `magenta`, `cyan` and `white`.  The first color given is the
-foreground; the second is the background.  All the basic colors except
-`normal` have a bright variant that can be speficied by prefixing the
-color with `bright`, like `brightred`.
+The basic colors accepted are `normal`, `black`, `red`, `green`,
+`yellow`, `blue`, `magenta`, `cyan`, `white` and `default`.  The first
+color given is the foreground; the second is the background.  All the
+basic colors except `normal` and `default` have a bright variant that can
+be specified by prefixing the color with `bright`, like `brightred`.
++
+The color `normal` makes no change to the color. It is the same as an
+empty string, but can be used as the foreground color when specifying a
+background color alone (for example, "normal red").
++
+The color `default` explicitly resets the color to the terminal default,
+for example to specify a cleared background. Although it varies between
+terminals, this is usually not the same as setting to "white black".
 +
 Colors may also be given as numbers between 0 and 255; these use ANSI
 256-color mode (but note that not all terminals may support this).  If
@@ -279,6 +287,11 @@ The position of any attributes with respect to the colors
 (before, after, or in between), doesn't matter. Specific attributes may
 be turned off by prefixing them with `no` or `no-` (e.g., `noreverse`,
 `no-ul`, etc).
++
+The pseudo-attribute `reset` resets all colors and attributes before
+applying the specified coloring. For example, `reset green` will result
+in a green foreground and default background without any active
+attributes.
 +
 An empty color string produces no color effect at all. This can be used
 to avoid coloring specific elements without disabling color entirely.
@@ -298,6 +311,15 @@ pathname::
 	tilde expansion happens to such a string: `~/`
 	is expanded to the value of `$HOME`, and `~user/` to the
 	specified user's home directory.
++
+If a path starts with `%(prefix)/`, the remainder is interpreted as a
+path relative to Git's "runtime prefix", i.e. relative to the location
+where Git itself was installed. For example, `%(prefix)/bin/` refers to
+the directory in which the Git executable itself lives. If Git was
+compiled without runtime prefix support, the compiled-in prefix will be
+substituted instead. In the unlikely event that a literal path needs to
+be specified that should _not_ be expanded, it needs to be prefixed by
+`./`, like so: `./%(prefix)/bin`.
 
 
 Variables
@@ -334,11 +356,15 @@ include::config/checkout.txt[]
 
 include::config/clean.txt[]
 
+include::config/clone.txt[]
+
 include::config/color.txt[]
 
 include::config/column.txt[]
 
 include::config/commit.txt[]
+
+include::config/commitgraph.txt[]
 
 include::config/credential.txt[]
 
@@ -394,9 +420,13 @@ include::config/interactive.txt[]
 
 include::config/log.txt[]
 
+include::config/lsrefs.txt[]
+
 include::config/mailinfo.txt[]
 
 include::config/mailmap.txt[]
+
+include::config/maintenance.txt[]
 
 include::config/man.txt[]
 

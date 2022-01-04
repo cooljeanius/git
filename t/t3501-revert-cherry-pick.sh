@@ -10,13 +10,16 @@ test_description='test cherry-pick and revert with renames
 
 '
 
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
 . ./test-lib.sh
 
 test_expect_success setup '
 
 	for l in a b c d e f g h i j k l m n o
 	do
-		echo $l$l$l$l$l$l$l$l$l
+		echo $l$l$l$l$l$l$l$l$l || return 1
 	done >oops &&
 
 	test_tick &&
@@ -112,7 +115,7 @@ test_expect_success 'cherry-pick on unborn branch' '
 test_expect_success 'cherry-pick "-" to pick from previous branch' '
 	git checkout unborn &&
 	test_commit to-pick actual content &&
-	git checkout master &&
+	git checkout main &&
 	git cherry-pick - &&
 	echo content >expect &&
 	test_cmp expect actual
@@ -132,7 +135,7 @@ test_expect_success 'cherry-pick "-" is meaningless without checkout' '
 test_expect_success 'cherry-pick "-" works with arguments' '
 	git checkout -b side-branch &&
 	test_commit change actual change &&
-	git checkout master &&
+	git checkout main &&
 	git cherry-pick -s - &&
 	echo "Signed-off-by: C O Mitter <committer@example.com>" >expect &&
 	git cat-file commit HEAD | grep ^Signed-off-by: >signoff &&
@@ -155,4 +158,20 @@ test_expect_success 'cherry-pick works with dirty renamed file' '
 	grep -q "^modified$" renamed
 '
 
+test_expect_success 'advice from failed revert' '
+	test_commit --no-tag "add dream" dream dream &&
+	dream_oid=$(git rev-parse --short HEAD) &&
+	cat <<-EOF >expected &&
+	error: could not revert $dream_oid... add dream
+	hint: After resolving the conflicts, mark them with
+	hint: "git add/rm <pathspec>", then run
+	hint: "git revert --continue".
+	hint: You can instead skip this commit with "git revert --skip".
+	hint: To abort and get back to the state before "git revert",
+	hint: run "git revert --abort".
+	EOF
+	test_commit --append --no-tag "double-add dream" dream dream &&
+	test_must_fail git revert HEAD^ 2>actual &&
+	test_cmp expected actual
+'
 test_done

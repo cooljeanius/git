@@ -11,6 +11,7 @@
 #include "version.h"
 #include "refs.h"
 #include "parse-options.h"
+#include "prompt.h"
 
 struct category_description {
 	uint32_t category;
@@ -263,6 +264,8 @@ void load_command_list(const char *prefix,
 	const char *env_path = getenv("PATH");
 	const char *exec_path = git_exec_path();
 
+	load_builtin_commands(prefix, main_cmds);
+
 	if (exec_path) {
 		list_commands_in_dir(main_cmds, exec_path, prefix);
 		QSORT(main_cmds->names, main_cmds->cnt, cmdname_compare);
@@ -290,9 +293,21 @@ void load_command_list(const char *prefix,
 	exclude_cmds(other_cmds, main_cmds);
 }
 
-void list_commands(unsigned int colopts,
-		   struct cmdnames *main_cmds, struct cmdnames *other_cmds)
+static int get_colopts(const char *var, const char *value, void *data)
 {
+	unsigned int *colopts = data;
+
+	if (starts_with(var, "column."))
+		return git_column_config(var, value, "help", colopts);
+
+	return 0;
+}
+
+void list_commands(struct cmdnames *main_cmds, struct cmdnames *other_cmds)
+{
+	unsigned int colopts = 0;
+	git_config(get_colopts, &colopts);
+
 	if (main_cmds->cnt) {
 		const char *exec_path = git_exec_path();
 		printf_ln(_("available git commands in '%s'"), exec_path);
@@ -470,12 +485,29 @@ int is_in_cmdlist(struct cmdnames *c, const char *s)
 static int autocorrect;
 static struct cmdnames aliases;
 
+#define AUTOCORRECT_PROMPT (-3)
+#define AUTOCORRECT_NEVER (-2)
+#define AUTOCORRECT_IMMEDIATELY (-1)
+
 static int git_unknown_cmd_config(const char *var, const char *value, void *cb)
 {
 	const char *p;
 
-	if (!strcmp(var, "help.autocorrect"))
-		autocorrect = git_config_int(var,value);
+	if (!strcmp(var, "help.autocorrect")) {
+		if (!value)
+			return config_error_nonbool(var);
+		if (!strcmp(value, "never")) {
+			autocorrect = AUTOCORRECT_NEVER;
+		} else if (!strcmp(value, "immediate")) {
+			autocorrect = AUTOCORRECT_IMMEDIATELY;
+		} else if (!strcmp(value, "prompt")) {
+			autocorrect = AUTOCORRECT_PROMPT;
+		} else {
+			int v = git_config_int(var, value);
+			autocorrect = (v < 0)
+				? AUTOCORRECT_IMMEDIATELY : v;
+		}
+	}
 	/* Also use aliases for command lookup */
 	if (skip_prefix(var, "alias.", &p))
 		add_cmdname(&aliases, p, strlen(p));
@@ -522,6 +554,17 @@ const char *help_unknown_cmd(const char *cmd)
 	memset(&aliases, 0, sizeof(aliases));
 
 	read_early_config(git_unknown_cmd_config, NULL);
+
+	/*
+	 * Disable autocorrection prompt in a non-interactive session
+	 */
+	if ((autocorrect == AUTOCORRECT_PROMPT) && (!isatty(0) || !isatty(2)))
+		autocorrect = AUTOCORRECT_NEVER;
+
+	if (autocorrect == AUTOCORRECT_NEVER) {
+		fprintf_ln(stderr, _("git: '%s' is not a git command. See 'git --help'."), cmd);
+		exit(1);
+	}
 
 	load_command_list("git-", &main_cmds, &other_cmds);
 
@@ -592,12 +635,21 @@ const char *help_unknown_cmd(const char *cmd)
 			   _("WARNING: You called a Git command named '%s', "
 			     "which does not exist."),
 			   cmd);
-		if (autocorrect < 0)
+		if (autocorrect == AUTOCORRECT_IMMEDIATELY)
 			fprintf_ln(stderr,
 				   _("Continuing under the assumption that "
 				     "you meant '%s'."),
 				   assumed);
-		else {
+		else if (autocorrect == AUTOCORRECT_PROMPT) {
+			char *answer;
+			struct strbuf msg = STRBUF_INIT;
+			strbuf_addf(&msg, _("Run '%s' instead? (y/N)"), assumed);
+			answer = git_prompt(msg.buf, PROMPT_ECHO);
+			strbuf_release(&msg);
+			if (!(starts_with(answer, "y") ||
+			      starts_with(answer, "Y")))
+				exit(1);
+		} else {
 			fprintf_ln(stderr,
 				   _("Continuing in %0.1f seconds, "
 				     "assuming that you meant '%s'."),

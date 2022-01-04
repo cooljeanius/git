@@ -63,6 +63,7 @@ create_lib_submodule_repo () {
 	git init submodule_update_repo &&
 	(
 		cd submodule_update_repo &&
+		branch=$(git symbolic-ref --short HEAD) &&
 		echo "expect" >>.gitignore &&
 		echo "actual" >>.gitignore &&
 		echo "x" >file1 &&
@@ -144,7 +145,7 @@ create_lib_submodule_repo () {
 		git checkout -b valid_sub1 &&
 		git revert HEAD &&
 
-		git checkout master
+		git checkout "$branch"
 	)
 }
 
@@ -316,14 +317,7 @@ test_submodule_switch_common () {
 	command="$1"
 	######################### Appearing submodule #########################
 	# Switching to a commit letting a submodule appear creates empty dir ...
-	if test "$KNOWN_FAILURE_STASH_DOES_IGNORE_SUBMODULE_CHANGES" = 1
-	then
-		# Restoring stash fails to restore submodule index entry
-		RESULT="failure"
-	else
-		RESULT="success"
-	fi
-	test_expect_$RESULT "$command: added submodule creates empty directory" '
+	test_expect_success "$command: added submodule creates empty directory" '
 		prolog &&
 		reset_work_tree_to no_submodule &&
 		(
@@ -337,6 +331,13 @@ test_submodule_switch_common () {
 		)
 	'
 	# ... and doesn't care if it already exists.
+	if test "$KNOWN_FAILURE_STASH_DOES_IGNORE_SUBMODULE_CHANGES" = 1
+	then
+		# Restoring stash fails to restore submodule index entry
+		RESULT="failure"
+	else
+		RESULT="success"
+	fi
 	test_expect_$RESULT "$command: added submodule leaves existing empty directory alone" '
 		prolog &&
 		reset_work_tree_to no_submodule &&

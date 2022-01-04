@@ -23,10 +23,10 @@
 
 static const char * const git_tag_usage[] = {
 	N_("git tag [-a | -s | -u <key-id>] [-f] [-m <msg> | -F <file>]\n"
-		"\t\t<tagname> [<head>]"),
+	   "        <tagname> [<head>]"),
 	N_("git tag -d <tagname>..."),
 	N_("git tag -l [-n[<num>]] [--contains <commit>] [--no-contains <commit>] [--points-at <object>]\n"
-		"\t\t[--format=<format>] [--merged <commit>] [--no-merged <commit>] [<pattern>...]"),
+	   "        [--format=<format>] [--merged <commit>] [--no-merged <commit>] [<pattern>...]"),
 	N_("git tag -v [--format=<format>] <tagname>..."),
 	NULL
 };
@@ -39,6 +39,8 @@ static int list_tags(struct ref_filter *filter, struct ref_sorting *sorting,
 		     struct ref_format *format)
 {
 	struct ref_array array;
+	struct strbuf output = STRBUF_INIT;
+	struct strbuf err = STRBUF_INIT;
 	char *to_free = NULL;
 	int i;
 
@@ -63,8 +65,17 @@ static int list_tags(struct ref_filter *filter, struct ref_sorting *sorting,
 	filter_refs(&array, filter, FILTER_REFS_TAGS);
 	ref_array_sort(sorting, &array);
 
-	for (i = 0; i < array.nr; i++)
-		show_ref_array_item(array.items[i], format);
+	for (i = 0; i < array.nr; i++) {
+		strbuf_reset(&output);
+		strbuf_reset(&err);
+		if (format_ref_array_item(array.items[i], format, &output, &err))
+			die("%s", err.buf);
+		fwrite(output.buf, 1, output.len, stdout);
+		putchar('\n');
+	}
+
+	strbuf_release(&err);
+	strbuf_release(&output);
 	ref_array_clear(&array);
 	free(to_free);
 
@@ -72,10 +83,10 @@ static int list_tags(struct ref_filter *filter, struct ref_sorting *sorting,
 }
 
 typedef int (*each_tag_name_fn)(const char *name, const char *ref,
-				const struct object_id *oid, const void *cb_data);
+				const struct object_id *oid, void *cb_data);
 
 static int for_each_tag_name(const char **argv, each_tag_name_fn fn,
-			     const void *cb_data)
+			     void *cb_data)
 {
 	const char **p;
 	struct strbuf ref = STRBUF_INIT;
@@ -97,21 +108,45 @@ static int for_each_tag_name(const char **argv, each_tag_name_fn fn,
 	return had_error;
 }
 
-static int delete_tag(const char *name, const char *ref,
-		      const struct object_id *oid, const void *cb_data)
+static int collect_tags(const char *name, const char *ref,
+			const struct object_id *oid, void *cb_data)
 {
-	if (delete_ref(NULL, ref, oid, 0))
-		return 1;
-	printf(_("Deleted tag '%s' (was %s)\n"), name,
-	       find_unique_abbrev(oid, DEFAULT_ABBREV));
+	struct string_list *ref_list = cb_data;
+
+	string_list_append(ref_list, ref);
+	ref_list->items[ref_list->nr - 1].util = oiddup(oid);
 	return 0;
 }
 
+static int delete_tags(const char **argv)
+{
+	int result;
+	struct string_list refs_to_delete = STRING_LIST_INIT_DUP;
+	struct string_list_item *item;
+
+	result = for_each_tag_name(argv, collect_tags, (void *)&refs_to_delete);
+	if (delete_refs(NULL, &refs_to_delete, REF_NO_DEREF))
+		result = 1;
+
+	for_each_string_list_item(item, &refs_to_delete) {
+		const char *name = item->string;
+		struct object_id *oid = item->util;
+		if (!ref_exists(name))
+			printf(_("Deleted tag '%s' (was %s)\n"),
+				item->string + 10,
+				find_unique_abbrev(oid, DEFAULT_ABBREV));
+
+		free(oid);
+	}
+	string_list_clear(&refs_to_delete, 0);
+	return result;
+}
+
 static int verify_tag(const char *name, const char *ref,
-		      const struct object_id *oid, const void *cb_data)
+		      const struct object_id *oid, void *cb_data)
 {
 	int flags;
-	const struct ref_format *format = cb_data;
+	struct ref_format *format = cb_data;
 	flags = GPG_VERIFY_VERBOSE;
 
 	if (format->format)
@@ -143,7 +178,6 @@ static const char tag_template_nocleanup[] =
 static int git_tag_config(const char *var, const char *value, void *cb)
 {
 	int status;
-	struct ref_sorting **sorting_tail = (struct ref_sorting **)cb;
 
 	if (!strcmp(var, "tag.gpgsign")) {
 		config_sign_tag = git_config_bool(var, value);
@@ -153,7 +187,7 @@ static int git_tag_config(const char *var, const char *value, void *cb)
 	if (!strcmp(var, "tag.sort")) {
 		if (!value)
 			return config_error_nonbool(var);
-		parse_ref_sorting(sorting_tail, value);
+		string_list_append(cb, value);
 		return 0;
 	}
 
@@ -174,11 +208,17 @@ static void write_tag_body(int fd, const struct object_id *oid)
 {
 	unsigned long size;
 	enum object_type type;
-	char *buf, *sp;
+	char *buf, *sp, *orig;
+	struct strbuf payload = STRBUF_INIT;
+	struct strbuf signature = STRBUF_INIT;
 
-	buf = read_object_file(oid, &type, &size);
+	orig = buf = read_object_file(oid, &type, &size);
 	if (!buf)
 		return;
+	if (parse_signature(buf, size, &payload, &signature)) {
+		buf = payload.buf;
+		size = payload.len;
+	}
 	/* skip header */
 	sp = strstr(buf, "\n\n");
 
@@ -187,9 +227,11 @@ static void write_tag_body(int fd, const struct object_id *oid)
 		return;
 	}
 	sp += 2; /* skip the 2 LFs */
-	write_or_die(fd, sp, parse_signature(sp, buf + size - sp));
+	write_or_die(fd, sp, buf + size - sp);
 
-	free(buf);
+	free(orig);
+	strbuf_release(&payload);
+	strbuf_release(&signature);
 }
 
 static int build_tag_object(struct strbuf *buf, int sign, struct object_id *result)
@@ -250,9 +292,7 @@ static void create_tag(const struct object_id *object, const char *object_ref,
 
 		/* write the template message before editing: */
 		path = git_pathdup("TAG_EDITMSG");
-		fd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
-		if (fd < 0)
-			die_errno(_("could not create file '%s'"), path);
+		fd = xopen(path, O_CREAT | O_TRUNC | O_WRONLY, 0600);
 
 		if (opt->message_given) {
 			write_or_die(fd, buf->buf, buf->len);
@@ -391,11 +431,12 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	int annotate = 0, force = 0;
 	int cmdmode = 0, create_tag_object = 0;
 	const char *msgfile = NULL, *keyid = NULL;
-	struct msg_arg msg = { 0, STRBUF_INIT };
+	struct msg_arg msg = { .buf = STRBUF_INIT };
 	struct ref_transaction *transaction;
 	struct strbuf err = STRBUF_INIT;
 	struct ref_filter filter;
-	static struct ref_sorting *sorting = NULL, **sorting_tail = &sorting;
+	struct ref_sorting *sorting;
+	struct string_list sorting_options = STRING_LIST_INIT_DUP;
 	struct ref_format format = REF_FORMAT_INIT;
 	int icase = 0;
 	int edit_flag = 0;
@@ -429,7 +470,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		OPT_WITHOUT(&filter.no_commit, N_("print only tags that don't contain the commit")),
 		OPT_MERGED(&filter, N_("print only tags that are merged")),
 		OPT_NO_MERGED(&filter, N_("print only tags that are not merged")),
-		OPT_REF_SORT(sorting_tail),
+		OPT_REF_SORT(&sorting_options),
 		{
 			OPTION_CALLBACK, 0, "points-at", &filter.points_at, N_("object"),
 			N_("print only tags of the object"), PARSE_OPT_LASTARG_DEFAULT,
@@ -441,10 +482,11 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		OPT_BOOL('i', "ignore-case", &icase, N_("sorting and filtering are case insensitive")),
 		OPT_END()
 	};
+	int ret = 0;
 
 	setup_ref_filter_porcelain_msg();
 
-	git_config(git_tag_config, sorting_tail);
+	git_config(git_tag_config, &sorting_options);
 
 	memset(&opt, 0, sizeof(opt));
 	memset(&filter, 0, sizeof(filter));
@@ -483,12 +525,10 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 			die(_("--column and -n are incompatible"));
 		colopts = 0;
 	}
-	if (!sorting)
-		sorting = ref_default_sorting();
-	ref_sorting_icase_all(sorting, icase);
+	sorting = ref_sorting_options(&sorting_options);
+	ref_sorting_set_sort_flags_all(sorting, REF_SORTING_ICASE, icase);
 	filter.ignore_case = icase;
 	if (cmdmode == 'l') {
-		int ret;
 		if (column_active(colopts)) {
 			struct column_options copts;
 			memset(&copts, 0, sizeof(copts));
@@ -499,7 +539,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		ret = list_tags(&filter, sorting, &format);
 		if (column_active(colopts))
 			stop_column_filter();
-		return ret;
+		goto cleanup;
 	}
 	if (filter.lines != -1)
 		die(_("-n option is only allowed in list mode"));
@@ -511,12 +551,15 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		die(_("--points-at option is only allowed in list mode"));
 	if (filter.reachable_from || filter.unreachable_from)
 		die(_("--merged and --no-merged options are only allowed in list mode"));
-	if (cmdmode == 'd')
-		return for_each_tag_name(argv, delete_tag, NULL);
+	if (cmdmode == 'd') {
+		ret = delete_tags(argv);
+		goto cleanup;
+	}
 	if (cmdmode == 'v') {
 		if (format.format && verify_ref_format(&format))
 			usage_with_options(git_tag_usage, options);
-		return for_each_tag_name(argv, verify_tag, &format);
+		ret = for_each_tag_name(argv, verify_tag, &format);
+		goto cleanup;
 	}
 
 	if (msg.given || msgfile) {
@@ -540,7 +583,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 
 	object_ref = argc == 2 ? argv[1] : "HEAD";
 	if (argc > 2)
-		die(_("too many params"));
+		die(_("too many arguments"));
 
 	if (get_oid(object_ref, &object))
 		die(_("Failed to resolve '%s' as a valid ref."), object_ref);
@@ -585,10 +628,12 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		printf(_("Updated tag '%s' (was %s)\n"), tag,
 		       find_unique_abbrev(&prev, DEFAULT_ABBREV));
 
-	UNLEAK(buf);
-	UNLEAK(ref);
-	UNLEAK(reflog_msg);
-	UNLEAK(msg);
-	UNLEAK(err);
-	return 0;
+cleanup:
+	ref_sorting_release(sorting);
+	strbuf_release(&buf);
+	strbuf_release(&ref);
+	strbuf_release(&reflog_msg);
+	strbuf_release(&msg.buf);
+	strbuf_release(&err);
+	return ret;
 }

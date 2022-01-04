@@ -191,11 +191,12 @@ static int add(int argc, const char **argv)
 	url = argv[1];
 
 	remote = remote_get(name);
-	if (remote_is_configured(remote, 1))
-		die(_("remote %s already exists."), name);
+	if (remote_is_configured(remote, 1)) {
+		error(_("remote %s already exists."), name);
+		exit(3);
+	}
 
-	strbuf_addf(&buf2, "refs/heads/test:refs/remotes/%s/test", name);
-	if (!valid_fetch_refspec(buf2.buf))
+	if (!valid_remote_name(name))
 		die(_("'%s' is not a valid remote name"), name);
 
 	strbuf_addf(&buf, "remote.%s.url", name);
@@ -220,7 +221,7 @@ static int add(int argc, const char **argv)
 
 	if (fetch_tags != TAGS_DEFAULT) {
 		strbuf_reset(&buf);
-		strbuf_addf(&buf, "remote.%s.tagopt", name);
+		strbuf_addf(&buf, "remote.%s.tagOpt", name);
 		git_config_set(buf.buf,
 			       fetch_tags == TAGS_SET ? "--tags" : "--no-tags");
 	}
@@ -317,6 +318,9 @@ static int config_read_branches(const char *key, const char *value, void *cb)
 		 * truth value with >= REBASE_TRUE.
 		 */
 		info->rebase = rebase_parse_value(value);
+		if (info->rebase == REBASE_INVALID)
+			warning(_("unhandled branch.%s.rebase=%s; assuming "
+				  "'true'"), name, value);
 		break;
 	case PUSH_REMOTE:
 		if (info->push_remote_name)
@@ -343,6 +347,14 @@ struct ref_states {
 	int queried;
 };
 
+#define REF_STATES_INIT { \
+	.new_refs = STRING_LIST_INIT_DUP, \
+	.stale = STRING_LIST_INIT_DUP, \
+	.tracked = STRING_LIST_INIT_DUP, \
+	.heads = STRING_LIST_INIT_DUP, \
+	.push = STRING_LIST_INIT_DUP, \
+}
+
 static int get_ref_states(const struct ref *remote_refs, struct ref_states *states)
 {
 	struct ref *fetch_map = NULL, **tail = &fetch_map;
@@ -354,9 +366,6 @@ static int get_ref_states(const struct ref *remote_refs, struct ref_states *stat
 			die(_("Could not get fetch map for refspec %s"),
 				states->remote->fetch.raw[i]);
 
-	states->new_refs.strdup_strings = 1;
-	states->tracked.strdup_strings = 1;
-	states->stale.strdup_strings = 1;
 	for (ref = fetch_map; ref; ref = ref->next) {
 		if (!ref->peer_ref || !ref_exists(ref->peer_ref->name))
 			string_list_append(&states->new_refs, abbrev_branch(ref->name));
@@ -405,7 +414,6 @@ static int get_push_ref_states(const struct ref *remote_refs,
 
 	match_push_refs(local_refs, &push_map, &remote->push, MATCH_REFS_NONE);
 
-	states->push.strdup_strings = 1;
 	for (ref = push_map; ref; ref = ref->next) {
 		struct string_list_item *item;
 		struct push_info *info;
@@ -448,7 +456,6 @@ static int get_push_ref_states_noquery(struct ref_states *states)
 	if (remote->mirror)
 		return 0;
 
-	states->push.strdup_strings = 1;
 	if (!remote->push.nr) {
 		item = string_list_append(&states->push, _("(matching)"));
 		info = item->util = xcalloc(1, sizeof(struct push_info));
@@ -482,7 +489,6 @@ static int get_head_names(const struct ref *remote_refs, struct ref_states *stat
 	refspec.force = 0;
 	refspec.pattern = 1;
 	refspec.src = refspec.dst = "refs/heads/*";
-	states->heads.strdup_strings = 1;
 	get_fetch_map(remote_refs, &refspec, &fetch_map_tail, 0);
 	matches = guess_remote_head(find_ref_by_name(remote_refs, "HEAD"),
 				    fetch_map, 1);
@@ -686,21 +692,23 @@ static int mv(int argc, const char **argv)
 	rename.remote_branches = &remote_branches;
 
 	oldremote = remote_get(rename.old_name);
-	if (!remote_is_configured(oldremote, 1))
-		die(_("No such remote: '%s'"), rename.old_name);
+	if (!remote_is_configured(oldremote, 1)) {
+		error(_("No such remote: '%s'"), rename.old_name);
+		exit(2);
+	}
 
 	if (!strcmp(rename.old_name, rename.new_name) && oldremote->origin != REMOTE_CONFIG)
 		return migrate_file(oldremote);
 
 	newremote = remote_get(rename.new_name);
-	if (remote_is_configured(newremote, 1))
-		die(_("remote %s already exists."), rename.new_name);
+	if (remote_is_configured(newremote, 1)) {
+		error(_("remote %s already exists."), rename.new_name);
+		exit(3);
+	}
 
-	strbuf_addf(&buf, "refs/heads/test:refs/remotes/%s/test", rename.new_name);
-	if (!valid_fetch_refspec(buf.buf))
+	if (!valid_remote_name(rename.new_name))
 		die(_("'%s' is not a valid remote name"), rename.new_name);
 
-	strbuf_reset(&buf);
 	strbuf_addf(&buf, "remote.%s", rename.old_name);
 	strbuf_addf(&buf2, "remote.%s", rename.new_name);
 	if (git_config_rename_section(buf.buf, buf2.buf) < 1)
@@ -709,7 +717,7 @@ static int mv(int argc, const char **argv)
 
 	strbuf_reset(&buf);
 	strbuf_addf(&buf, "remote.%s.fetch", rename.new_name);
-	git_config_set_multivar(buf.buf, NULL, NULL, 1);
+	git_config_set_multivar(buf.buf, NULL, NULL, CONFIG_FLAGS_MULTI_REPLACE);
 	strbuf_addf(&old_remote_context, ":refs/remotes/%s/", rename.old_name);
 	for (i = 0; i < oldremote->fetch.raw_nr; i++) {
 		char *ptr;
@@ -743,7 +751,7 @@ static int mv(int argc, const char **argv)
 		}
 		if (info->push_remote_name && !strcmp(info->push_remote_name, rename.old_name)) {
 			strbuf_reset(&buf);
-			strbuf_addf(&buf, "branch.%s.pushremote", item->string);
+			strbuf_addf(&buf, "branch.%s.pushRemote", item->string);
 			git_config_set(buf.buf, rename.new_name);
 		}
 	}
@@ -829,8 +837,10 @@ static int rm(int argc, const char **argv)
 		usage_with_options(builtin_remote_rm_usage, options);
 
 	remote = remote_get(argv[1]);
-	if (!remote_is_configured(remote, 1))
-		die(_("No such remote: '%s'"), argv[1]);
+	if (!remote_is_configured(remote, 1)) {
+		error(_("No such remote: '%s'"), argv[1]);
+		exit(2);
+	}
 
 	known_remotes.to_delete = remote;
 	for_each_remote(add_known_remote, &known_remotes);
@@ -933,9 +943,6 @@ static int get_remote_ref_states(const char *name,
 				 struct ref_states *states,
 				 int query)
 {
-	struct transport *transport;
-	const struct ref *remote_refs;
-
 	states->remote = remote_get(name);
 	if (!states->remote)
 		return error(_("No such remote: '%s'"), name);
@@ -943,10 +950,12 @@ static int get_remote_ref_states(const char *name,
 	read_branches();
 
 	if (query) {
+		struct transport *transport;
+		const struct ref *remote_refs;
+
 		transport = transport_get(states->remote, states->remote->url_nr > 0 ?
 			states->remote->url[0] : NULL);
 		remote_refs = transport_get_remote_refs(transport, NULL);
-		transport_disconnect(transport);
 
 		states->queried = 1;
 		if (query & GET_REF_STATES)
@@ -955,6 +964,7 @@ static int get_remote_ref_states(const char *name,
 			get_head_names(remote_refs, states);
 		if (query & GET_PUSH_REF_STATES)
 			get_push_ref_states(remote_refs, states);
+		transport_disconnect(transport);
 	} else {
 		for_each_ref(append_ref_to_tracked_list, states);
 		string_list_sort(&states->tracked);
@@ -965,11 +975,16 @@ static int get_remote_ref_states(const char *name,
 }
 
 struct show_info {
-	struct string_list *list;
-	struct ref_states *states;
+	struct string_list list;
+	struct ref_states states;
 	int width, width2;
 	int any_rebase;
 };
+
+#define SHOW_INFO_INIT { \
+	.list = STRING_LIST_INIT_DUP, \
+	.states = REF_STATES_INIT, \
+}
 
 static int add_remote_to_show_info(struct string_list_item *item, void *cb_data)
 {
@@ -977,14 +992,14 @@ static int add_remote_to_show_info(struct string_list_item *item, void *cb_data)
 	int n = strlen(item->string);
 	if (n > info->width)
 		info->width = n;
-	string_list_insert(info->list, item->string);
+	string_list_insert(&info->list, item->string);
 	return 0;
 }
 
 static int show_remote_info_item(struct string_list_item *item, void *cb_data)
 {
 	struct show_info *info = cb_data;
-	struct ref_states *states = info->states;
+	struct ref_states *states = &info->states;
 	const char *name = item->string;
 
 	if (states->queried) {
@@ -1011,7 +1026,7 @@ static int show_remote_info_item(struct string_list_item *item, void *cb_data)
 static int add_local_to_show_info(struct string_list_item *branch_item, void *cb_data)
 {
 	struct show_info *show_info = cb_data;
-	struct ref_states *states = show_info->states;
+	struct ref_states *states = &show_info->states;
 	struct branch_info *branch_info = branch_item->util;
 	struct string_list_item *item;
 	int n;
@@ -1024,7 +1039,7 @@ static int add_local_to_show_info(struct string_list_item *branch_item, void *cb
 	if (branch_info->rebase >= REBASE_TRUE)
 		show_info->any_rebase = 1;
 
-	item = string_list_insert(show_info->list, branch_item->string);
+	item = string_list_insert(&show_info->list, branch_item->string);
 	item->util = branch_info;
 
 	return 0;
@@ -1079,7 +1094,7 @@ static int add_push_to_show_info(struct string_list_item *push_item, void *cb_da
 		show_info->width = n;
 	if ((n = strlen(push_info->dest)) > show_info->width2)
 		show_info->width2 = n;
-	item = string_list_append(show_info->list, push_item->string);
+	item = string_list_append(&show_info->list, push_item->string);
 	item->util = push_item->util;
 	return 0;
 }
@@ -1207,9 +1222,7 @@ static int show(int argc, const char **argv)
 		OPT_BOOL('n', NULL, &no_query, N_("do not query remotes")),
 		OPT_END()
 	};
-	struct ref_states states;
-	struct string_list info_list = STRING_LIST_INIT_NODUP;
-	struct show_info info;
+	struct show_info info = SHOW_INFO_INIT;
 
 	argc = parse_options(argc, argv, NULL, options, builtin_remote_show_usage,
 			     0);
@@ -1220,26 +1233,22 @@ static int show(int argc, const char **argv)
 	if (!no_query)
 		query_flag = (GET_REF_STATES | GET_HEAD_NAMES | GET_PUSH_REF_STATES);
 
-	memset(&states, 0, sizeof(states));
-	memset(&info, 0, sizeof(info));
-	info.states = &states;
-	info.list = &info_list;
 	for (; argc; argc--, argv++) {
 		int i;
 		const char **url;
 		int url_nr;
 
-		get_remote_ref_states(*argv, &states, query_flag);
+		get_remote_ref_states(*argv, &info.states, query_flag);
 
 		printf_ln(_("* remote %s"), *argv);
-		printf_ln(_("  Fetch URL: %s"), states.remote->url_nr > 0 ?
-		       states.remote->url[0] : _("(no URL)"));
-		if (states.remote->pushurl_nr) {
-			url = states.remote->pushurl;
-			url_nr = states.remote->pushurl_nr;
+		printf_ln(_("  Fetch URL: %s"), info.states.remote->url_nr > 0 ?
+		       info.states.remote->url[0] : _("(no URL)"));
+		if (info.states.remote->pushurl_nr) {
+			url = info.states.remote->pushurl;
+			url_nr = info.states.remote->pushurl_nr;
 		} else {
-			url = states.remote->url;
-			url_nr = states.remote->url_nr;
+			url = info.states.remote->url;
+			url_nr = info.states.remote->url_nr;
 		}
 		for (i = 0; i < url_nr; i++)
 			/*
@@ -1252,57 +1261,57 @@ static int show(int argc, const char **argv)
 			printf_ln(_("  Push  URL: %s"), _("(no URL)"));
 		if (no_query)
 			printf_ln(_("  HEAD branch: %s"), _("(not queried)"));
-		else if (!states.heads.nr)
+		else if (!info.states.heads.nr)
 			printf_ln(_("  HEAD branch: %s"), _("(unknown)"));
-		else if (states.heads.nr == 1)
-			printf_ln(_("  HEAD branch: %s"), states.heads.items[0].string);
+		else if (info.states.heads.nr == 1)
+			printf_ln(_("  HEAD branch: %s"), info.states.heads.items[0].string);
 		else {
 			printf(_("  HEAD branch (remote HEAD is ambiguous,"
 				 " may be one of the following):\n"));
-			for (i = 0; i < states.heads.nr; i++)
-				printf("    %s\n", states.heads.items[i].string);
+			for (i = 0; i < info.states.heads.nr; i++)
+				printf("    %s\n", info.states.heads.items[i].string);
 		}
 
 		/* remote branch info */
 		info.width = 0;
-		for_each_string_list(&states.new_refs, add_remote_to_show_info, &info);
-		for_each_string_list(&states.tracked, add_remote_to_show_info, &info);
-		for_each_string_list(&states.stale, add_remote_to_show_info, &info);
-		if (info.list->nr)
+		for_each_string_list(&info.states.new_refs, add_remote_to_show_info, &info);
+		for_each_string_list(&info.states.tracked, add_remote_to_show_info, &info);
+		for_each_string_list(&info.states.stale, add_remote_to_show_info, &info);
+		if (info.list.nr)
 			printf_ln(Q_("  Remote branch:%s",
 				     "  Remote branches:%s",
-				     info.list->nr),
+				     info.list.nr),
 				  no_query ? _(" (status not queried)") : "");
-		for_each_string_list(info.list, show_remote_info_item, &info);
-		string_list_clear(info.list, 0);
+		for_each_string_list(&info.list, show_remote_info_item, &info);
+		string_list_clear(&info.list, 0);
 
 		/* git pull info */
 		info.width = 0;
 		info.any_rebase = 0;
 		for_each_string_list(&branch_list, add_local_to_show_info, &info);
-		if (info.list->nr)
+		if (info.list.nr)
 			printf_ln(Q_("  Local branch configured for 'git pull':",
 				     "  Local branches configured for 'git pull':",
-				     info.list->nr));
-		for_each_string_list(info.list, show_local_info_item, &info);
-		string_list_clear(info.list, 0);
+				     info.list.nr));
+		for_each_string_list(&info.list, show_local_info_item, &info);
+		string_list_clear(&info.list, 0);
 
 		/* git push info */
-		if (states.remote->mirror)
+		if (info.states.remote->mirror)
 			printf_ln(_("  Local refs will be mirrored by 'git push'"));
 
 		info.width = info.width2 = 0;
-		for_each_string_list(&states.push, add_push_to_show_info, &info);
-		QSORT(info.list->items, info.list->nr, cmp_string_with_push);
-		if (info.list->nr)
+		for_each_string_list(&info.states.push, add_push_to_show_info, &info);
+		QSORT(info.list.items, info.list.nr, cmp_string_with_push);
+		if (info.list.nr)
 			printf_ln(Q_("  Local ref configured for 'git push'%s:",
 				     "  Local refs configured for 'git push'%s:",
-				     info.list->nr),
+				     info.list.nr),
 				  no_query ? _(" (status not queried)") : "");
-		for_each_string_list(info.list, show_push_info_item, &info);
-		string_list_clear(info.list, 0);
+		for_each_string_list(&info.list, show_push_info_item, &info);
+		string_list_clear(&info.list, 0);
 
-		free_remote_ref_states(&states);
+		free_remote_ref_states(&info.states);
 	}
 
 	return result;
@@ -1329,8 +1338,7 @@ static int set_head(int argc, const char **argv)
 	if (!opt_a && !opt_d && argc == 2) {
 		head_name = xstrdup(argv[1]);
 	} else if (opt_a && !opt_d && argc == 1) {
-		struct ref_states states;
-		memset(&states, 0, sizeof(states));
+		struct ref_states states = REF_STATES_INIT;
 		get_remote_ref_states(argv[0], &states, GET_HEAD_NAMES);
 		if (!states.heads.nr)
 			result |= error(_("Cannot determine remote HEAD"));
@@ -1369,14 +1377,13 @@ static int set_head(int argc, const char **argv)
 static int prune_remote(const char *remote, int dry_run)
 {
 	int result = 0;
-	struct ref_states states;
+	struct ref_states states = REF_STATES_INIT;
 	struct string_list refs_to_prune = STRING_LIST_INIT_NODUP;
 	struct string_list_item *item;
 	const char *dangling_msg = dry_run
 		? _(" %s will become dangling!")
 		: _(" %s has become dangling!");
 
-	memset(&states, 0, sizeof(states));
 	get_remote_ref_states(remote, &states, GET_REF_STATES);
 
 	if (!states.stale.nr) {
@@ -1486,7 +1493,8 @@ static int update(int argc, const char **argv)
 
 static int remove_all_fetch_refspecs(const char *key)
 {
-	return git_config_set_multivar_gently(key, NULL, NULL, 1);
+	return git_config_set_multivar_gently(key, NULL, NULL,
+					      CONFIG_FLAGS_MULTI_REPLACE);
 }
 
 static void add_branches(struct remote *remote, const char **branches,
@@ -1511,8 +1519,10 @@ static int set_remote_branches(const char *remotename, const char **branches,
 	strbuf_addf(&key, "remote.%s.fetch", remotename);
 
 	remote = remote_get(remotename);
-	if (!remote_is_configured(remote, 1))
-		die(_("No such remote '%s'"), remotename);
+	if (!remote_is_configured(remote, 1)) {
+		error(_("No such remote '%s'"), remotename);
+		exit(2);
+	}
 
 	if (!add_mode && remove_all_fetch_refspecs(key.buf)) {
 		strbuf_release(&key);
@@ -1565,8 +1575,10 @@ static int get_url(int argc, const char **argv)
 	remotename = argv[0];
 
 	remote = remote_get(remotename);
-	if (!remote_is_configured(remote, 1))
-		die(_("No such remote '%s'"), remotename);
+	if (!remote_is_configured(remote, 1)) {
+		error(_("No such remote '%s'"), remotename);
+		exit(2);
+	}
 
 	url_nr = 0;
 	if (push_mode) {
@@ -1633,8 +1645,10 @@ static int set_url(int argc, const char **argv)
 		oldurl = newurl;
 
 	remote = remote_get(remotename);
-	if (!remote_is_configured(remote, 1))
-		die(_("No such remote '%s'"), remotename);
+	if (!remote_is_configured(remote, 1)) {
+		error(_("No such remote '%s'"), remotename);
+		exit(2);
+	}
 
 	if (push_mode) {
 		strbuf_addf(&name_buf, "remote.%s.pushurl", remotename);
@@ -1675,7 +1689,8 @@ static int set_url(int argc, const char **argv)
 	if (!delete_mode)
 		git_config_set_multivar(name_buf.buf, newurl, oldurl, 0);
 	else
-		git_config_set_multivar(name_buf.buf, NULL, oldurl, 1);
+		git_config_set_multivar(name_buf.buf, NULL, oldurl,
+					CONFIG_FLAGS_MULTI_REPLACE);
 out:
 	strbuf_release(&name_buf);
 	return 0;

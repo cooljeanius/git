@@ -258,11 +258,10 @@ static int import_object(struct object_id *oid, enum object_type type,
 		return error_errno(_("unable to open %s for reading"), filename);
 
 	if (!raw && type == OBJ_TREE) {
-		const char *argv[] = { "mktree", NULL };
 		struct child_process cmd = CHILD_PROCESS_INIT;
 		struct strbuf result = STRBUF_INIT;
 
-		cmd.argv = argv;
+		strvec_push(&cmd.args, "mktree");
 		cmd.git_cmd = 1;
 		cmd.in = fd;
 		cmd.out = -1;
@@ -507,7 +506,7 @@ static int convert_graft_file(int force)
 	if (!fp)
 		return -1;
 
-	advice_graft_file_deprecated = 0;
+	no_graft_file_deprecated_advice = 1;
 	while (strbuf_getline(&buf, fp) != EOF) {
 		if (*buf.buf == '#')
 			continue;

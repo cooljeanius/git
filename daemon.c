@@ -63,6 +63,12 @@ struct hostinfo {
 	unsigned int hostname_lookup_done:1;
 	unsigned int saw_extended_args:1;
 };
+#define HOSTINFO_INIT { \
+	.hostname = STRBUF_INIT, \
+	.canon_hostname = STRBUF_INIT, \
+	.ip_address = STRBUF_INIT, \
+	.tcp_port = STRBUF_INIT, \
+}
 
 static void lookup_hostname(struct hostinfo *hi);
 
@@ -320,22 +326,18 @@ static int run_access_hook(struct daemon_service *service, const char *dir,
 {
 	struct child_process child = CHILD_PROCESS_INIT;
 	struct strbuf buf = STRBUF_INIT;
-	const char *argv[8];
-	const char **arg = argv;
 	char *eol;
 	int seen_errors = 0;
 
-	*arg++ = access_hook;
-	*arg++ = service->name;
-	*arg++ = path;
-	*arg++ = hi->hostname.buf;
-	*arg++ = get_canon_hostname(hi);
-	*arg++ = get_ip_address(hi);
-	*arg++ = hi->tcp_port.buf;
-	*arg = NULL;
+	strvec_push(&child.args, access_hook);
+	strvec_push(&child.args, service->name);
+	strvec_push(&child.args, path);
+	strvec_push(&child.args, hi->hostname.buf);
+	strvec_push(&child.args, get_canon_hostname(hi));
+	strvec_push(&child.args, get_ip_address(hi));
+	strvec_push(&child.args, hi->tcp_port.buf);
 
 	child.use_shell = 1;
-	child.argv = argv;
 	child.no_stdin = 1;
 	child.no_stderr = 1;
 	child.out = -1;
@@ -566,14 +568,14 @@ static void parse_host_and_port(char *hostport, char **host,
 
 /*
  * Sanitize a string from the client so that it's OK to be inserted into a
- * filesystem path. Specifically, we disallow slashes, runs of "..", and
- * trailing and leading dots, which means that the client cannot escape
- * our base path via ".." traversal.
+ * filesystem path. Specifically, we disallow directory separators, runs
+ * of "..", and trailing and leading dots, which means that the client
+ * cannot escape our base path via ".." traversal.
  */
 static void sanitize_client(struct strbuf *out, const char *in)
 {
 	for (; *in; in++) {
-		if (*in == '/')
+		if (is_dir_sep(*in))
 			continue;
 		if (*in == '.' && (!out->len || out->buf[out->len - 1] == '.'))
 			continue;
@@ -727,15 +729,6 @@ static void lookup_hostname(struct hostinfo *hi)
 	}
 }
 
-static void hostinfo_init(struct hostinfo *hi)
-{
-	memset(hi, 0, sizeof(*hi));
-	strbuf_init(&hi->hostname, 0);
-	strbuf_init(&hi->canon_hostname, 0);
-	strbuf_init(&hi->ip_address, 0);
-	strbuf_init(&hi->tcp_port, 0);
-}
-
 static void hostinfo_clear(struct hostinfo *hi)
 {
 	strbuf_release(&hi->hostname);
@@ -760,17 +753,15 @@ static int execute(void)
 	char *line = packet_buffer;
 	int pktlen, len, i;
 	char *addr = getenv("REMOTE_ADDR"), *port = getenv("REMOTE_PORT");
-	struct hostinfo hi;
+	struct hostinfo hi = HOSTINFO_INIT;
 	struct strvec env = STRVEC_INIT;
-
-	hostinfo_init(&hi);
 
 	if (addr)
 		loginfo("Connection from %s:%s", addr, port);
 
 	set_keep_alive(0);
 	alarm(init_timeout ? init_timeout : timeout);
-	pktlen = packet_read(0, NULL, NULL, packet_buffer, sizeof(packet_buffer), 0);
+	pktlen = packet_read(0, packet_buffer, sizeof(packet_buffer), 0);
 	alarm(0);
 
 	len = strlen(line);
@@ -840,7 +831,7 @@ static void add_child(struct child_process *cld, struct sockaddr *addr, socklen_
 {
 	struct child *newborn, **cradle;
 
-	newborn = xcalloc(1, sizeof(*newborn));
+	CALLOC_ARRAY(newborn, 1);
 	live_children++;
 	memcpy(&newborn->cld, cld, sizeof(*cld));
 	memcpy(&newborn->address, addr, addrlen);
@@ -927,7 +918,7 @@ static void handle(int incoming, struct sockaddr *addr, socklen_t addrlen)
 #endif
 	}
 
-	cld.argv = cld_argv.v;
+	strvec_pushv(&cld.args, cld_argv.v);
 	cld.in = incoming;
 	cld.out = dup(incoming);
 
@@ -1148,7 +1139,7 @@ static int service_loop(struct socketlist *socklist)
 	struct pollfd *pfd;
 	int i;
 
-	pfd = xcalloc(socklist->nr, sizeof(struct pollfd));
+	CALLOC_ARRAY(pfd, socklist->nr);
 
 	for (i = 0; i < socklist->nr; i++) {
 		pfd[i].fd = socklist->list[i];

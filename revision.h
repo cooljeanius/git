@@ -44,9 +44,6 @@
 /*
  * Indicates object was reached by traversal. i.e. not given by user on
  * command-line or stdin.
- * NEEDSWORK: NOT_USER_GIVEN doesn't apply to commits because we only support
- * filtering trees and blobs, but it may be useful to support filtering commits
- * in the future.
  */
 #define NOT_USER_GIVEN	(1u<<25)
 #define TRACK_LINEAR	(1u<<26)
@@ -81,10 +78,6 @@ struct rev_cmdline_info {
 		unsigned flags;
 	} *rev;
 };
-
-#define REVISION_WALK_WALK 0
-#define REVISION_WALK_NO_WALK_SORTED 1
-#define REVISION_WALK_NO_WALK_UNSORTED 2
 
 struct oidset;
 struct topo_walk_info;
@@ -132,7 +125,8 @@ struct rev_info {
 	/* Traversal flags */
 	unsigned int	dense:1,
 			prune:1,
-			no_walk:2,
+			no_walk:1,
+			unsorted_input:1,
 			remove_empty_trees:1,
 			simplify_history:1,
 			show_pulls:1,
@@ -148,6 +142,7 @@ struct rev_info {
 			edge_hint_aggressive:1,
 			limited:1,
 			unpacked:1,
+			no_kept_objects:1,
 			boundary:2,
 			count:1,
 			left_right:1,
@@ -191,11 +186,16 @@ struct rev_info {
 			match_missing:1,
 			no_commit_id:1,
 			verbose_header:1,
+			always_show_header:1,
+			/* Diff-merge flags */
+			explicit_diff_merges: 1,
+			merges_need_diff: 1,
+			merges_imply_patch:1,
+			separate_merges: 1,
 			combine_merges:1,
 			combined_all_paths:1,
 			dense_combined_merges:1,
-			always_show_header:1;
-	int             ignore_merges:2;
+			first_parent_merges:1;
 
 	/* Format info */
 	int		show_notes;
@@ -212,7 +212,8 @@ struct rev_info {
 			missing_newline:1,
 			date_mode_explicit:1,
 			preserve_subject:1,
-			encode_email_headers:1;
+			encode_email_headers:1,
+			include_header:1;
 	unsigned int	disable_stdin:1;
 	/* --show-linear-break */
 	unsigned int	track_linear:1,
@@ -230,7 +231,7 @@ struct rev_info {
 	const char	*mime_boundary;
 	const char	*patch_suffix;
 	int		numbered_files;
-	int		reroll_count;
+	const char	*reroll_count;
 	char		*message_id;
 	struct ident_split from_ident;
 	struct string_list *ref_message_ids;
@@ -238,6 +239,7 @@ struct rev_info {
 	const char	*extra_headers;
 	const char	*log_reencode;
 	const char	*subject_prefix;
+	int		patch_name_max;
 	int		no_inline;
 	int		show_log_size;
 	struct string_list *mailmap;
@@ -258,6 +260,7 @@ struct rev_info {
 	int min_parents;
 	int max_parents;
 	int (*include_check)(struct commit *, void *);
+	int (*include_check_obj)(struct object *obj, void *);
 	void *include_check_data;
 
 	/* diff info for patches and for paths limiting */
@@ -311,6 +314,9 @@ struct rev_info {
 	 * This is loaded from the commit-graph being used.
 	 */
 	struct bloom_filter_settings *bloom_filter_settings;
+
+	/* misc. flags related to '--no-kept-objects' */
+	unsigned keep_pack_cache_flags;
 };
 
 int ref_excluded(struct string_list *, const char *path);
@@ -330,7 +336,6 @@ extern volatile show_early_output_fn_t show_early_output;
 struct setup_revision_opt {
 	const char *def;
 	void (*tweak)(struct rev_info *, struct setup_revision_opt *);
-	const char *submodule;	/* TODO: drop this and use rev_info->repo */
 	unsigned int	assume_dashdash:1,
 			allow_exclude_promisor_objects:1;
 	unsigned revarg_opt;

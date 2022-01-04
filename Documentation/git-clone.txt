@@ -9,13 +9,13 @@ git-clone - Clone a repository into a new directory
 SYNOPSIS
 --------
 [verse]
-'git clone' [--template=<template_directory>]
+'git clone' [--template=<template-directory>]
 	  [-l] [-s] [--no-hardlinks] [-q] [-n] [--bare] [--mirror]
 	  [-o <name>] [-b <name>] [-u <upload-pack>] [--reference <repository>]
-	  [--dissociate] [--separate-git-dir <git dir>]
+	  [--dissociate] [--separate-git-dir <git-dir>]
 	  [--depth <depth>] [--[no-]single-branch] [--no-tags]
 	  [--recurse-submodules[=<pathspec>]] [--[no-]shallow-submodules]
-	  [--[no-]remote-submodules] [--jobs <n>] [--sparse]
+	  [--[no-]remote-submodules] [--jobs <n>] [--sparse] [--[no-]reject-shallow]
 	  [--filter=<filter>] [--] <repository>
 	  [<directory>]
 
@@ -57,6 +57,10 @@ repository is specified as a URL, then this flag is ignored (and we
 never use the local optimizations).  Specifying `--no-local` will
 override the default when `/path/to/repo` is given, using the regular
 Git transport instead.
++
+*NOTE*: this operation can race with concurrent modification to the
+source repository, similar to running `cp -r src dst` while modifying
+`src`.
 
 --no-hardlinks::
 	Force the cloning process from a repository on a local
@@ -78,9 +82,9 @@ repository using this option and then delete branches (or use any
 other Git command that makes any existing commit unreferenced) in the
 source repository, some objects may become unreferenced (or dangling).
 These objects may be removed by normal Git operations (such as `git commit`)
-which automatically call `git gc --auto`. (See linkgit:git-gc[1].)
-If these objects are removed and were referenced by the cloned repository,
-then the cloned repository will become corrupt.
+which automatically call `git maintenance run --auto`. (See
+linkgit:git-maintenance[1].) If these objects are removed and were referenced
+by the cloned repository, then the cloned repository will become corrupt.
 +
 Note that running `git repack` without the `--local` option in a repository
 cloned with `--shared` will copy objects from the source repository into a pack
@@ -145,6 +149,11 @@ objects from the source repository into a pack in the cloned repository.
 --no-checkout::
 	No checkout of HEAD is performed after the clone is complete.
 
+--[no-]reject-shallow::
+	Fail if the source repository is a shallow repository.
+	The 'clone.rejectShallow' configuration variable can be used to
+	specify the default.
+
 --bare::
 	Make a 'bare' Git repository.  That is, instead of
 	creating `<directory>` and placing the administrative
@@ -158,10 +167,10 @@ objects from the source repository into a pack in the cloned repository.
 	configuration variables are created.
 
 --sparse::
-	Initialize the sparse-checkout file so the working
-	directory starts with only the files in the root
-	of the repository. The sparse-checkout file can be
-	modified to grow the working directory as needed.
+	Employ a sparse-checkout, with only files in the toplevel
+	directory initially being present.  The
+	linkgit:git-sparse-checkout[1] command can be used to grow the
+	working directory as needed.
 
 --filter=<filter-spec>::
 	Use the partial clone feature and request that the server sends
@@ -183,8 +192,9 @@ objects from the source repository into a pack in the cloned repository.
 
 -o <name>::
 --origin <name>::
-	Instead of using the remote name `origin` to keep track
-	of the upstream repository, use `<name>`.
+	Instead of using the remote name `origin` to keep track of the upstream
+	repository, use `<name>`.  Overrides `clone.defaultRemoteName` from the
+	config.
 
 -b <name>::
 --branch <name>::
@@ -201,7 +211,7 @@ objects from the source repository into a pack in the cloned repository.
 	via ssh, this specifies a non-default path for the command
 	run on the other end.
 
---template=<template_directory>::
+--template=<template-directory>::
 	Specify the directory from which templates will be used;
 	(See the "TEMPLATE DIRECTORY" section of linkgit:git-init[1].)
 
@@ -284,7 +294,7 @@ or `--mirror` is given)
 	superproject's recorded SHA-1. Equivalent to passing `--remote` to
 	`git submodule update`.
 
---separate-git-dir=<git dir>::
+--separate-git-dir=<git-dir>::
 	Instead of placing the cloned repository where it is supposed
 	to be, place the cloned repository at the specified directory,
 	then make a filesystem-agnostic Git symbolic link to there.

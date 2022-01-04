@@ -232,26 +232,29 @@ debug_ref_iterator_begin(struct ref_store *ref_store, const char *prefix,
 	struct debug_ref_iterator *diter = xcalloc(1, sizeof(*diter));
 	base_ref_iterator_init(&diter->base, &debug_ref_iterator_vtable, 1);
 	diter->iter = res;
-	trace_printf_key(&trace_refs, "ref_iterator_begin: %s (0x%x)\n", prefix, flags);
+	trace_printf_key(&trace_refs, "ref_iterator_begin: \"%s\" (0x%x)\n",
+			 prefix, flags);
 	return &diter->base;
 }
 
 static int debug_read_raw_ref(struct ref_store *ref_store, const char *refname,
 			      struct object_id *oid, struct strbuf *referent,
-			      unsigned int *type)
+			      unsigned int *type, int *failure_errno)
 {
 	struct debug_ref_store *drefs = (struct debug_ref_store *)ref_store;
 	int res = 0;
 
-	oidcpy(oid, &null_oid);
+	oidcpy(oid, null_oid());
 	res = drefs->refs->be->read_raw_ref(drefs->refs, refname, oid, referent,
-					    type);
+					    type, failure_errno);
 
 	if (res == 0) {
 		trace_printf_key(&trace_refs, "read_raw_ref: %s: %s (=> %s) type %x: %d\n",
 			refname, oid_to_hex(oid), referent->buf, *type, res);
 	} else {
-		trace_printf_key(&trace_refs, "read_raw_ref: %s: %d\n", refname, res);
+		trace_printf_key(&trace_refs,
+				 "read_raw_ref: %s: %d (errno %d)\n", refname,
+				 res, *failure_errno);
 	}
 	return res;
 }
@@ -281,6 +284,7 @@ static int debug_print_reflog_ent(struct object_id *old_oid,
 	int ret;
 	char o[GIT_MAX_HEXSZ + 1] = "null";
 	char n[GIT_MAX_HEXSZ + 1] = "null";
+	char *msgend = strchrnul(msg, '\n');
 	if (old_oid)
 		oid_to_hex_r(o, old_oid);
 	if (new_oid)
@@ -288,8 +292,10 @@ static int debug_print_reflog_ent(struct object_id *old_oid,
 
 	ret = dbg->fn(old_oid, new_oid, committer, timestamp, tz, msg,
 		      dbg->cb_data);
-	trace_printf_key(&trace_refs, "reflog_ent %s (ret %d): %s -> %s, %s %ld \"%s\"\n",
-		dbg->refname, ret, o, n, committer, (long int)timestamp, msg);
+	trace_printf_key(&trace_refs,
+			 "reflog_ent %s (ret %d): %s -> %s, %s %ld \"%.*s\"\n",
+			 dbg->refname, ret, o, n, committer,
+			 (long int)timestamp, (int)(msgend - msg), msg);
 	return ret;
 }
 
@@ -336,11 +342,10 @@ static int debug_reflog_exists(struct ref_store *ref_store, const char *refname)
 }
 
 static int debug_create_reflog(struct ref_store *ref_store, const char *refname,
-			       int force_create, struct strbuf *err)
+			       struct strbuf *err)
 {
 	struct debug_ref_store *drefs = (struct debug_ref_store *)ref_store;
-	int res = drefs->refs->be->create_reflog(drefs->refs, refname,
-						 force_create, err);
+	int res = drefs->refs->be->create_reflog(drefs->refs, refname, err);
 	trace_printf_key(&trace_refs, "create_reflog: %s: %d\n", refname, res);
 	return res;
 }
@@ -353,18 +358,59 @@ static int debug_delete_reflog(struct ref_store *ref_store, const char *refname)
 	return res;
 }
 
+struct debug_reflog_expiry_should_prune {
+	reflog_expiry_prepare_fn *prepare;
+	reflog_expiry_should_prune_fn *should_prune;
+	reflog_expiry_cleanup_fn *cleanup;
+	void *cb_data;
+};
+
+static void debug_reflog_expiry_prepare(const char *refname,
+					const struct object_id *oid,
+					void *cb_data)
+{
+	struct debug_reflog_expiry_should_prune *prune = cb_data;
+	trace_printf_key(&trace_refs, "reflog_expire_prepare: %s\n", refname);
+	prune->prepare(refname, oid, prune->cb_data);
+}
+
+static int debug_reflog_expiry_should_prune_fn(struct object_id *ooid,
+					       struct object_id *noid,
+					       const char *email,
+					       timestamp_t timestamp, int tz,
+					       const char *message, void *cb_data) {
+	struct debug_reflog_expiry_should_prune *prune = cb_data;
+
+	int result = prune->should_prune(ooid, noid, email, timestamp, tz, message, prune->cb_data);
+	trace_printf_key(&trace_refs, "reflog_expire_should_prune: %s %ld: %d\n", message, (long int) timestamp, result);
+	return result;
+}
+
+static void debug_reflog_expiry_cleanup(void *cb_data)
+{
+	struct debug_reflog_expiry_should_prune *prune = cb_data;
+	prune->cleanup(prune->cb_data);
+}
+
 static int debug_reflog_expire(struct ref_store *ref_store, const char *refname,
-			       const struct object_id *oid, unsigned int flags,
+			       unsigned int flags,
 			       reflog_expiry_prepare_fn prepare_fn,
 			       reflog_expiry_should_prune_fn should_prune_fn,
 			       reflog_expiry_cleanup_fn cleanup_fn,
 			       void *policy_cb_data)
 {
 	struct debug_ref_store *drefs = (struct debug_ref_store *)ref_store;
-	int res = drefs->refs->be->reflog_expire(drefs->refs, refname, oid,
-						 flags, prepare_fn,
-						 should_prune_fn, cleanup_fn,
-						 policy_cb_data);
+	struct debug_reflog_expiry_should_prune prune = {
+		.prepare = prepare_fn,
+		.cleanup = cleanup_fn,
+		.should_prune = should_prune_fn,
+		.cb_data = policy_cb_data,
+	};
+	int res = drefs->refs->be->reflog_expire(drefs->refs, refname,
+						 flags, &debug_reflog_expiry_prepare,
+						 &debug_reflog_expiry_should_prune_fn,
+						 &debug_reflog_expiry_cleanup,
+						 &prune);
 	trace_printf_key(&trace_refs, "reflog_expire: %s: %d\n", refname, res);
 	return res;
 }
