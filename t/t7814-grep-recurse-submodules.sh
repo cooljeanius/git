@@ -6,6 +6,7 @@ This test verifies the recurse-submodules feature correctly greps across
 submodules.
 '
 
+TEST_CREATE_REPO_NO_TEMPLATE=1
 . ./test-lib.sh
 
 GIT_TEST_FATAL_REGISTER_SUBMODULE_ODB=1
@@ -471,8 +472,10 @@ test_expect_failure 'grep --textconv: superproject .gitattributes (from index) d
 test_expect_failure 'grep --textconv: superproject .git/info/attributes does not affect submodules' '
 	reset_and_clean &&
 	test_config_global diff.d2x.textconv "sed -e \"s/d/x/\"" &&
-	super_attr="$(git rev-parse --git-path info/attributes)" &&
+	super_info="$(git rev-parse --git-path info)" &&
+	super_attr="$super_info/attributes" &&
 	test_when_finished "rm -f \"$super_attr\"" &&
+	mkdir "$super_info" &&
 	echo "a diff=d2x" >"$super_attr" &&
 
 	cat >expect <<-\EOF &&
@@ -516,7 +519,8 @@ test_expect_failure 'grep --textconv correctly reads submodule .git/info/attribu
 	reset_and_clean &&
 	test_config_global diff.d2x.textconv "sed -e \"s/d/x/\"" &&
 
-	submodule_attr="$(git -C submodule rev-parse --path-format=absolute --git-path info/attributes)" &&
+	submodule_info="$(git -C submodule rev-parse --path-format=absolute --git-path info)" &&
+	submodule_attr="$submodule_info/attributes" &&
 	test_when_finished "rm -f \"$submodule_attr\"" &&
 	echo "a diff=d2x" >"$submodule_attr" &&
 
@@ -542,6 +546,47 @@ test_expect_failure 'grep saves textconv cache in the appropriate repository' '
 			--path-format=absolute --git-path refs/notes/textconv/d2x_cached)" &&
 	test_path_is_missing "$super_textconv_cache" &&
 	test_path_is_file "$sub_textconv_cache"
+'
+
+test_expect_success 'grep partially-cloned submodule' '
+	# Set up clean superproject and submodule for partial cloning.
+	git init super &&
+	git init super/sub &&
+	(
+		cd super &&
+		test_commit --no-tag "Add file in superproject" \
+			super-file "Some content for super-file" &&
+		test_commit -C sub --no-tag "Add file in submodule" \
+			sub-file "Some content for sub-file" &&
+		git submodule add ./sub &&
+		git commit -m "Add other as submodule sub" &&
+		test_tick &&
+		test_commit -C sub --no-tag --append "Update file in submodule" \
+			sub-file "Some more content for sub-file" &&
+		git add sub &&
+		git commit -m "Update submodule" &&
+		test_tick &&
+		git config --local uploadpack.allowfilter 1 &&
+		git config --local uploadpack.allowanysha1inwant 1 &&
+		git -C sub config --local uploadpack.allowfilter 1 &&
+		git -C sub config --local uploadpack.allowanysha1inwant 1
+	) &&
+	# Clone the superproject & submodule, then make sure we can lazy-fetch submodule objects.
+	git clone --filter=blob:none --also-filter-submodules \
+		--recurse-submodules "file://$(pwd)/super" partial &&
+	(
+		cd partial &&
+		cat >expect <<-\EOF &&
+		HEAD^:sub/sub-file:Some content for sub-file
+		HEAD^:super-file:Some content for super-file
+		EOF
+
+		GIT_TRACE2_EVENT="$(pwd)/trace2.log" git grep -e content \
+			--recurse-submodules HEAD^ >actual &&
+		test_cmp expect actual &&
+		# Verify that we actually fetched data from the promisor remote:
+		grep \"category\":\"promisor\",\"key\":\"fetch_count\",\"value\":\"1\" trace2.log
+	)
 '
 
 test_done

@@ -42,9 +42,9 @@ static enum rebase_type parse_config_rebase(const char *key, const char *value,
 		return v;
 
 	if (fatal)
-		die(_("Invalid value for %s: %s"), key, value);
+		die(_("invalid value for '%s': '%s'"), key, value);
 	else
-		error(_("Invalid value for %s: %s"), key, value);
+		error(_("invalid value for '%s': '%s'"), key, value);
 
 	return REBASE_INVALID;
 }
@@ -72,6 +72,7 @@ static const char * const pull_usage[] = {
 static int opt_verbosity;
 static char *opt_progress;
 static int recurse_submodules = RECURSE_SUBMODULES_DEFAULT;
+static int recurse_submodules_cli = RECURSE_SUBMODULES_DEFAULT;
 
 /* Options passed to git-merge or git-rebase */
 static enum rebase_type opt_rebase = -1;
@@ -120,7 +121,7 @@ static struct option pull_options[] = {
 		N_("force progress reporting"),
 		PARSE_OPT_NOARG),
 	OPT_CALLBACK_F(0, "recurse-submodules",
-		   &recurse_submodules, N_("on-demand"),
+		   &recurse_submodules_cli, N_("on-demand"),
 		   N_("control for recursive fetching of submodules"),
 		   PARSE_OPT_OPTARG, option_fetch_parse_recurse_submodules),
 
@@ -318,7 +319,7 @@ static const char *config_get_ff(void)
 	if (!strcmp(value, "only"))
 		return "--ff-only";
 
-	die(_("Invalid value for pull.ff: %s"), value);
+	die(_("invalid value for '%s': '%s'"), "pull.ff", value);
 }
 
 /**
@@ -536,8 +537,8 @@ static int run_fetch(const char *repo, const char **refspecs)
 		strvec_push(&args, opt_tags);
 	if (opt_prune)
 		strvec_push(&args, opt_prune);
-	if (recurse_submodules != RECURSE_SUBMODULES_DEFAULT)
-		switch (recurse_submodules) {
+	if (recurse_submodules_cli != RECURSE_SUBMODULES_DEFAULT)
+		switch (recurse_submodules_cli) {
 		case RECURSE_SUBMODULES_ON:
 			strvec_push(&args, "--recurse-submodules=on");
 			break;
@@ -989,13 +990,21 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 	int rebase_unspecified = 0;
 	int can_ff;
 	int divergent;
+	int ret;
 
 	if (!getenv("GIT_REFLOG_ACTION"))
 		set_reflog_message(argc, argv);
 
 	git_config(git_pull_config, NULL);
+	if (the_repository->gitdir) {
+		prepare_repo_settings(the_repository);
+		the_repository->settings.command_requires_full_index = 0;
+	}
 
 	argc = parse_options(argc, argv, prefix, pull_options, pull_usage, 0);
+
+	if (recurse_submodules_cli != RECURSE_SUBMODULES_DEFAULT)
+		recurse_submodules = recurse_submodules_cli;
 
 	if (cleanup_arg)
 		/*
@@ -1036,14 +1045,13 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 		oidclr(&orig_head);
 
 	if (opt_rebase) {
-		int autostash = config_autostash;
-		if (opt_autostash != -1)
-			autostash = opt_autostash;
+		if (opt_autostash == -1)
+			opt_autostash = config_autostash;
 
 		if (is_null_oid(&orig_head) && !is_cache_unborn())
 			die(_("Updating an unborn branch with changes added to the index."));
 
-		if (!autostash)
+		if (!opt_autostash)
 			require_clean_work_tree(the_repository,
 				N_("pull with rebase"),
 				_("please commit or stash them."), 1, 0);
@@ -1093,7 +1101,8 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 	if (is_null_oid(&orig_head)) {
 		if (merge_heads.nr > 1)
 			die(_("Cannot merge multiple branches into empty head."));
-		return pull_into_void(merge_heads.oid, &curr_head);
+		ret = pull_into_void(merge_heads.oid, &curr_head);
+		goto cleanup;
 	}
 	if (merge_heads.nr > 1) {
 		if (opt_rebase)
@@ -1118,8 +1127,6 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 	}
 
 	if (opt_rebase) {
-		int ret = 0;
-
 		struct object_id newbase;
 		struct object_id upstream;
 		get_rebase_newbase_and_upstream(&newbase, &upstream, &curr_head,
@@ -1142,12 +1149,16 @@ int cmd_pull(int argc, const char **argv, const char *prefix)
 			     recurse_submodules == RECURSE_SUBMODULES_ON_DEMAND))
 			ret = rebase_submodules();
 
-		return ret;
+		goto cleanup;
 	} else {
-		int ret = run_merge();
+		ret = run_merge();
 		if (!ret && (recurse_submodules == RECURSE_SUBMODULES_ON ||
 			     recurse_submodules == RECURSE_SUBMODULES_ON_DEMAND))
 			ret = update_submodules();
-		return ret;
+		goto cleanup;
 	}
+
+cleanup:
+	oid_array_clear(&merge_heads);
+	return ret;
 }

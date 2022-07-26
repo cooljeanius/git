@@ -733,7 +733,7 @@ char *interpolate_path(const char *path, int real_home)
 	struct strbuf user_path = STRBUF_INIT;
 	const char *to_copy = path;
 
-	if (path == NULL)
+	if (!path)
 		goto return_null;
 
 	if (skip_prefix(path, "%(prefix)/", &path))
@@ -1225,11 +1225,15 @@ int longest_ancestor_length(const char *path, struct string_list *prefixes)
 		const char *ceil = prefixes->items[i].string;
 		int len = strlen(ceil);
 
-		if (len == 1 && ceil[0] == '/')
-			len = 0; /* root matches anything, with length 0 */
-		else if (!strncmp(path, ceil, len) && path[len] == '/')
-			; /* match of length len */
-		else
+		/*
+		 * For root directories (`/`, `C:/`, `//server/share/`)
+		 * adjust the length to exclude the trailing slash.
+		 */
+		if (len > 0 && ceil[len - 1] == '/')
+			len--;
+
+		if (strncmp(path, ceil, len) ||
+		    path[len] != '/' || !path[len + 1])
 			continue; /* no match */
 
 		if (len > max_len)
@@ -1409,7 +1413,7 @@ int is_ntfs_dotgit(const char *name)
 
 	for (;;) {
 		c = *(name++);
-		if (!c || c == '\\' || c == '/' || c == ':')
+		if (!c || is_xplatform_dir_sep(c) || c == ':')
 			return 1;
 		if (c != '.' && c != ' ')
 			return 0;

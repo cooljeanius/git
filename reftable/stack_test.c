@@ -17,6 +17,7 @@ https://developers.google.com/open-source/licenses/bsd
 #include "record.h"
 #include "test_framework.h"
 #include "reftable-tests.h"
+#include "reader.h"
 
 #include <sys/types.h>
 #include <dirent.h>
@@ -34,7 +35,7 @@ static int count_dir_entries(const char *dirname)
 	DIR *dir = opendir(dirname);
 	int len = 0;
 	struct dirent *d;
-	if (dir == NULL)
+	if (!dir)
 		return 0;
 
 	while ((d = readdir(dir))) {
@@ -89,7 +90,7 @@ static void test_read_file(void)
 		EXPECT(0 == strcmp(want[i], names[i]));
 	}
 	free_names(names);
-	remove(fn);
+	(void) remove(fn);
 }
 
 static void test_parse_names(void)
@@ -138,8 +139,11 @@ static int write_test_log(struct reftable_writer *wr, void *arg)
 static void test_reftable_stack_add_one(void)
 {
 	char *dir = get_tmp_dir(__LINE__);
-
-	struct reftable_write_options cfg = { 0 };
+	struct strbuf scratch = STRBUF_INIT;
+	int mask = umask(002);
+	struct reftable_write_options cfg = {
+		.default_permissions = 0660,
+	};
 	struct reftable_stack *st = NULL;
 	int err;
 	struct reftable_ref_record ref = {
@@ -149,8 +153,7 @@ static void test_reftable_stack_add_one(void)
 		.value.symref = "master",
 	};
 	struct reftable_ref_record dest = { NULL };
-
-
+	struct stat stat_result = { 0 };
 	err = reftable_new_stack(&st, dir, cfg);
 	EXPECT_ERR(err);
 
@@ -160,6 +163,7 @@ static void test_reftable_stack_add_one(void)
 	err = reftable_stack_read_ref(st, ref.refname, &dest);
 	EXPECT_ERR(err);
 	EXPECT(0 == strcmp("master", dest.value.symref));
+	EXPECT(st->readers_len > 0);
 
 	printf("testing print functionality:\n");
 	err = reftable_stack_print_directory(dir, GIT_SHA1_FORMAT_ID);
@@ -168,9 +172,30 @@ static void test_reftable_stack_add_one(void)
 	err = reftable_stack_print_directory(dir, GIT_SHA256_FORMAT_ID);
 	EXPECT(err == REFTABLE_FORMAT_ERROR);
 
+#ifndef GIT_WINDOWS_NATIVE
+	strbuf_addstr(&scratch, dir);
+	strbuf_addstr(&scratch, "/tables.list");
+	err = stat(scratch.buf, &stat_result);
+	EXPECT(!err);
+	EXPECT((stat_result.st_mode & 0777) == cfg.default_permissions);
+
+	strbuf_reset(&scratch);
+	strbuf_addstr(&scratch, dir);
+	strbuf_addstr(&scratch, "/");
+	/* do not try at home; not an external API for reftable. */
+	strbuf_addstr(&scratch, st->readers[0]->name);
+	err = stat(scratch.buf, &stat_result);
+	EXPECT(!err);
+	EXPECT((stat_result.st_mode & 0777) == cfg.default_permissions);
+#else
+	(void) stat_result;
+#endif
+
 	reftable_ref_record_release(&dest);
 	reftable_stack_destroy(st);
+	strbuf_release(&scratch);
 	clear_dir(dir);
+	umask(mask);
 }
 
 static void test_reftable_stack_uptodate(void)
@@ -814,6 +839,7 @@ static void test_reftable_stack_auto_compaction(void)
 		EXPECT_ERR(err);
 
 		err = reftable_stack_auto_compact(st);
+		EXPECT_ERR(err);
 		EXPECT(i < 3 || st->merged->stack_len < 2 * fastlog2(i));
 	}
 

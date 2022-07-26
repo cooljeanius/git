@@ -194,7 +194,13 @@ static int write_one_shallow(const struct commit_graft *graft, void *cb_data)
 }
 
 struct output_state {
-	char buffer[8193];
+	/*
+	 * We do writes no bigger than LARGE_PACKET_DATA_MAX - 1, because with
+	 * sideband-64k the band designator takes up 1 byte of space. Because
+	 * relay_pack_data keeps the last byte to itself, we make the buffer 1
+	 * byte bigger than the intended maximum write size.
+	 */
+	char buffer[(LARGE_PACKET_DATA_MAX - 1) + 1];
 	int used;
 	unsigned packfile_uris_started : 1;
 	unsigned packfile_started : 1;
@@ -269,7 +275,7 @@ static void create_pack_file(struct upload_pack_data *pack_data,
 			     const struct string_list *uri_protocols)
 {
 	struct child_process pack_objects = CHILD_PROCESS_INIT;
-	struct output_state output_state = { { 0 } };
+	struct output_state *output_state = xcalloc(1, sizeof(struct output_state));
 	char progress[128];
 	char abort_msg[] = "aborting due to possible repository "
 		"corruption on the remote side.";
@@ -404,7 +410,7 @@ static void create_pack_file(struct upload_pack_data *pack_data,
 		}
 		if (0 <= pu && (pfd[pu].revents & (POLLIN|POLLHUP))) {
 			int result = relay_pack_data(pack_objects.out,
-						     &output_state,
+						     output_state,
 						     pack_data->use_sideband,
 						     !!uri_protocols);
 
@@ -438,11 +444,12 @@ static void create_pack_file(struct upload_pack_data *pack_data,
 	}
 
 	/* flush the data */
-	if (output_state.used > 0) {
-		send_client_data(1, output_state.buffer, output_state.used,
+	if (output_state->used > 0) {
+		send_client_data(1, output_state->buffer, output_state->used,
 				 pack_data->use_sideband);
 		fprintf(stderr, "flushed.\n");
 	}
+	free(output_state);
 	if (pack_data->use_sideband)
 		packet_flush(1);
 	return;
@@ -1314,16 +1321,25 @@ static int upload_pack_config(const char *var, const char *value, void *cb_data)
 		data->advertise_sid = git_config_bool(var, value);
 	}
 
-	if (current_config_scope() != CONFIG_SCOPE_LOCAL &&
-	    current_config_scope() != CONFIG_SCOPE_WORKTREE) {
-		if (!strcmp("uploadpack.packobjectshook", var))
-			return git_config_string(&data->pack_objects_hook, var, value);
-	}
-
 	if (parse_object_filter_config(var, value, data) < 0)
 		return -1;
 
 	return parse_hide_refs_config(var, value, "uploadpack");
+}
+
+static int upload_pack_protected_config(const char *var, const char *value, void *cb_data)
+{
+	struct upload_pack_data *data = cb_data;
+
+	if (!strcmp("uploadpack.packobjectshook", var))
+		return git_config_string(&data->pack_objects_hook, var, value);
+	return 0;
+}
+
+static void get_upload_pack_config(struct upload_pack_data *data)
+{
+	git_config(upload_pack_config, data);
+	git_protected_config(upload_pack_protected_config, data);
 }
 
 void upload_pack(const int advertise_refs, const int stateless_rpc,
@@ -1333,8 +1349,7 @@ void upload_pack(const int advertise_refs, const int stateless_rpc,
 	struct upload_pack_data data;
 
 	upload_pack_data_init(&data);
-
-	git_config(upload_pack_config, &data);
+	get_upload_pack_config(&data);
 
 	data.stateless_rpc = stateless_rpc;
 	data.timeout = timeout;
@@ -1393,13 +1408,19 @@ static int parse_want(struct packet_writer *writer, const char *line,
 	const char *arg;
 	if (skip_prefix(line, "want ", &arg)) {
 		struct object_id oid;
+		struct commit *commit;
 		struct object *o;
 
 		if (get_oid_hex(arg, &oid))
 			die("git upload-pack: protocol error, "
 			    "expected to get oid, not '%s'", line);
 
-		o = parse_object(the_repository, &oid);
+		commit = lookup_commit_in_graph(the_repository, &oid);
+		if (commit)
+			o = &commit->object;
+		else
+			o = parse_object(the_repository, &oid);
+
 		if (!o) {
 			packet_writer_error(writer,
 					    "upload-pack: not our ref %s",
@@ -1427,7 +1448,7 @@ static int parse_want_ref(struct packet_writer *writer, const char *line,
 	if (skip_prefix(line, "want-ref ", &refname_nons)) {
 		struct object_id oid;
 		struct string_list_item *item;
-		struct object *o;
+		struct object *o = NULL;
 		struct strbuf refname = STRBUF_INIT;
 
 		strbuf_addf(&refname, "%s%s", get_git_namespace(), refname_nons);
@@ -1441,7 +1462,15 @@ static int parse_want_ref(struct packet_writer *writer, const char *line,
 		item = string_list_append(wanted_refs, refname_nons);
 		item->util = oiddup(&oid);
 
-		o = parse_object_or_die(&oid, refname_nons);
+		if (!starts_with(refname_nons, "refs/tags/")) {
+			struct commit *commit = lookup_commit_in_graph(the_repository, &oid);
+			if (commit)
+				o = &commit->object;
+		}
+
+		if (!o)
+			o = parse_object_or_die(&oid, refname_nons);
+
 		if (!(o->flags & WANTED)) {
 			o->flags |= WANTED;
 			add_object_array(o, NULL, want_obj);
@@ -1674,8 +1703,7 @@ int upload_pack_v2(struct repository *r, struct packet_reader *request)
 
 	upload_pack_data_init(&data);
 	data.use_sideband = LARGE_PACKET_MAX;
-
-	git_config(upload_pack_config, &data);
+	get_upload_pack_config(&data);
 
 	while (state != FETCH_DONE) {
 		switch (state) {

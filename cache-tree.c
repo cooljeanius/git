@@ -3,6 +3,7 @@
 #include "tree.h"
 #include "tree-walk.h"
 #include "cache-tree.h"
+#include "bulk-checkin.h"
 #include "object-store.h"
 #include "replace-object.h"
 #include "promisor-remote.h"
@@ -432,15 +433,15 @@ static int update_one(struct cache_tree *it,
 	if (repair) {
 		struct object_id oid;
 		hash_object_file(the_hash_algo, buffer.buf, buffer.len,
-				 tree_type, &oid);
+				 OBJ_TREE, &oid);
 		if (has_object_file_with_flags(&oid, OBJECT_INFO_SKIP_FETCH_OBJECT))
 			oidcpy(&it->oid, &oid);
 		else
 			to_invalidate = 1;
 	} else if (dryrun) {
 		hash_object_file(the_hash_algo, buffer.buf, buffer.len,
-				 tree_type, &it->oid);
-	} else if (write_object_file_flags(buffer.buf, buffer.len, tree_type,
+				 OBJ_TREE, &it->oid);
+	} else if (write_object_file_flags(buffer.buf, buffer.len, OBJ_TREE,
 					   &it->oid, flags & WRITE_TREE_SILENT
 					   ? HASH_SILENT : 0)) {
 		strbuf_release(&buffer);
@@ -474,8 +475,10 @@ int cache_tree_update(struct index_state *istate, int flags)
 
 	trace_performance_enter();
 	trace2_region_enter("cache_tree", "update", the_repository);
+	begin_odb_transaction();
 	i = update_one(istate->cache_tree, istate->cache, istate->cache_nr,
 		       "", 0, &skip, flags);
+	end_odb_transaction();
 	trace2_region_leave("cache_tree", "update", the_repository);
 	trace_performance_leave("cache_tree_update");
 	if (i < 0)
@@ -692,14 +695,14 @@ struct tree* write_in_core_index_as_tree(struct repository *repo) {
 	ret = write_index_as_tree_internal(&o, index_state, was_valid, 0, NULL);
 	if (ret == WRITE_TREE_UNMERGED_INDEX) {
 		int i;
-		fprintf(stderr, "BUG: There are unmerged index entries:\n");
+		bug("there are unmerged index entries:");
 		for (i = 0; i < index_state->cache_nr; i++) {
 			const struct cache_entry *ce = index_state->cache[i];
 			if (ce_stage(ce))
-				fprintf(stderr, "BUG: %d %.*s\n", ce_stage(ce),
-					(int)ce_namelen(ce), ce->name);
+				bug("%d %.*s", ce_stage(ce),
+				    (int)ce_namelen(ce), ce->name);
 		}
-		BUG("unmerged index entries when writing inmemory index");
+		BUG("unmerged index entries when writing in-core index");
 	}
 
 	return lookup_tree(repo, &index_state->cache_tree->oid);
@@ -948,7 +951,7 @@ static int verify_one(struct repository *r,
 		strbuf_addf(&tree_buf, "%o %.*s%c", mode, entlen, name, '\0');
 		strbuf_add(&tree_buf, oid->hash, r->hash_algo->rawsz);
 	}
-	hash_object_file(r->hash_algo, tree_buf.buf, tree_buf.len, tree_type,
+	hash_object_file(r->hash_algo, tree_buf.buf, tree_buf.len, OBJ_TREE,
 			 &new_oid);
 	if (!oideq(&new_oid, &it->oid))
 		BUG("cache-tree for path %.*s does not match. "

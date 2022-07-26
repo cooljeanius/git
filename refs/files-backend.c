@@ -86,16 +86,12 @@ static struct ref_store *files_ref_store_create(struct repository *repo,
 	struct ref_store *ref_store = (struct ref_store *)refs;
 	struct strbuf sb = STRBUF_INIT;
 
-	ref_store->repo = repo;
-	ref_store->gitdir = xstrdup(gitdir);
-	base_ref_store_init(ref_store, &refs_be_files);
+	base_ref_store_init(ref_store, repo, gitdir, &refs_be_files);
 	refs->store_flags = flags;
-
 	get_common_dir_noenv(&sb, gitdir);
 	refs->gitcommondir = strbuf_detach(&sb, NULL);
-	strbuf_addf(&sb, "%s/packed-refs", refs->gitcommondir);
-	refs->packed_ref_store = packed_ref_store_create(repo, sb.buf, flags);
-	strbuf_release(&sb);
+	refs->packed_ref_store =
+		packed_ref_store_create(repo, refs->gitcommondir, flags);
 
 	chdir_notify_reparent("files-backend $GIT_DIR", &refs->base.gitdir);
 	chdir_notify_reparent("files-backend $GIT_COMMONDIR",
@@ -281,11 +277,10 @@ static void loose_fill_ref_dir(struct ref_store *ref_store,
 					 create_dir_entry(dir->cache, refname.buf,
 							  refname.len));
 		} else {
-			int ignore_errno;
 			if (!refs_resolve_ref_unsafe(&refs->base,
 						     refname.buf,
 						     RESOLVE_REF_READING,
-						     &oid, &flag, &ignore_errno)) {
+						     &oid, &flag)) {
 				oidclr(&oid);
 				flag |= REF_ISBROKEN;
 			} else if (is_null_oid(&oid)) {
@@ -343,9 +338,9 @@ static struct ref_cache *get_loose_ref_cache(struct files_ref_store *refs)
 	return refs->loose;
 }
 
-static int files_read_raw_ref(struct ref_store *ref_store, const char *refname,
-			      struct object_id *oid, struct strbuf *referent,
-			      unsigned int *type, int *failure_errno)
+static int read_ref_internal(struct ref_store *ref_store, const char *refname,
+			     struct object_id *oid, struct strbuf *referent,
+			     unsigned int *type, int *failure_errno, int skip_packed_refs)
 {
 	struct files_ref_store *refs =
 		files_downcast(ref_store, REF_STORE_READ, "read_raw_ref");
@@ -386,8 +381,7 @@ stat_ref:
 	if (lstat(path, &st) < 0) {
 		int ignore_errno;
 		myerr = errno;
-		errno = 0;
-		if (myerr != ENOENT)
+		if (myerr != ENOENT || skip_packed_refs)
 			goto out;
 		if (refs_read_raw_ref(refs->packed_ref_store, refname, oid,
 				      referent, type, &ignore_errno)) {
@@ -403,7 +397,6 @@ stat_ref:
 		strbuf_reset(&sb_contents);
 		if (strbuf_readlink(&sb_contents, path, st.st_size) < 0) {
 			myerr = errno;
-			errno = 0;
 			if (myerr == ENOENT || myerr == EINVAL)
 				/* inconsistent with lstat; retry */
 				goto stat_ref;
@@ -432,7 +425,8 @@ stat_ref:
 		 * ref is supposed to be, there could still be a
 		 * packed ref:
 		 */
-		if (refs_read_raw_ref(refs->packed_ref_store, refname, oid,
+		if (skip_packed_refs ||
+		    refs_read_raw_ref(refs->packed_ref_store, refname, oid,
 				      referent, type, &ignore_errno)) {
 			myerr = EISDIR;
 			goto out;
@@ -473,7 +467,29 @@ out:
 
 	strbuf_release(&sb_path);
 	strbuf_release(&sb_contents);
+	errno = 0;
 	return ret;
+}
+
+static int files_read_raw_ref(struct ref_store *ref_store, const char *refname,
+			      struct object_id *oid, struct strbuf *referent,
+			      unsigned int *type, int *failure_errno)
+{
+	return read_ref_internal(ref_store, refname, oid, referent, type, failure_errno, 0);
+}
+
+static int files_read_symbolic_ref(struct ref_store *ref_store, const char *refname,
+				   struct strbuf *referent)
+{
+	struct object_id oid;
+	int failure_errno, ret;
+	unsigned int type;
+
+	ret = read_ref_internal(ref_store, refname, &oid, referent, &type, &failure_errno, 1);
+	if (ret)
+		return ret;
+
+	return !(type & REF_ISSYMREF);
 }
 
 int parse_loose_ref_contents(const char *buf, struct object_id *oid,
@@ -806,9 +822,9 @@ static int files_ref_iterator_abort(struct ref_iterator *ref_iterator)
 }
 
 static struct ref_iterator_vtable files_ref_iterator_vtable = {
-	files_ref_iterator_advance,
-	files_ref_iterator_peel,
-	files_ref_iterator_abort
+	.advance = files_ref_iterator_advance,
+	.peel = files_ref_iterator_peel,
+	.abort = files_ref_iterator_abort,
 };
 
 static struct ref_iterator *files_ref_iterator_begin(
@@ -1011,7 +1027,6 @@ static struct ref_lock *lock_ref_oid_basic(struct files_ref_store *refs,
 {
 	struct strbuf ref_file = STRBUF_INIT;
 	struct ref_lock *lock;
-	int ignore_errno;
 
 	files_assert_main_repository(refs, "lock_ref_oid_basic");
 	assert(err);
@@ -1039,7 +1054,7 @@ static struct ref_lock *lock_ref_oid_basic(struct files_ref_store *refs,
 	}
 
 	if (!refs_resolve_ref_unsafe(&refs->base, lock->ref_name, 0,
-				     &lock->old_oid, NULL, &ignore_errno))
+				     &lock->old_oid, NULL))
 		oidclr(&lock->old_oid);
 	goto out;
 
@@ -1404,7 +1419,6 @@ static int files_copy_or_rename_ref(struct ref_store *ref_store,
 	struct strbuf tmp_renamed_log = STRBUF_INIT;
 	int log, ret;
 	struct strbuf err = STRBUF_INIT;
-	int ignore_errno;
 
 	files_reflog_path(refs, &sb_oldref, oldrefname);
 	files_reflog_path(refs, &sb_newref, newrefname);
@@ -1418,7 +1432,7 @@ static int files_copy_or_rename_ref(struct ref_store *ref_store,
 
 	if (!refs_resolve_ref_unsafe(&refs->base, oldrefname,
 				     RESOLVE_REF_READING | RESOLVE_REF_NO_RECURSE,
-				     &orig_oid, &flag, &ignore_errno)) {
+				     &orig_oid, &flag)) {
 		ret = error("refname %s not found", oldrefname);
 		goto out;
 	}
@@ -1464,7 +1478,7 @@ static int files_copy_or_rename_ref(struct ref_store *ref_store,
 	 */
 	if (!copy && refs_resolve_ref_unsafe(&refs->base, newrefname,
 					     RESOLVE_REF_READING | RESOLVE_REF_NO_RECURSE,
-					     NULL, NULL, &ignore_errno) &&
+					     NULL, NULL) &&
 	    refs_delete_ref(&refs->base, NULL, newrefname,
 			    NULL, REF_NO_DEREF)) {
 		if (errno == EISDIR) {
@@ -1785,6 +1799,7 @@ static int write_ref_to_lockfile(struct ref_lock *lock,
 	fd = get_lock_file_fd(&lock->lk);
 	if (write_in_full(fd, oid_to_hex(oid), the_hash_algo->hexsz) < 0 ||
 	    write_in_full(fd, &term, 1) < 0 ||
+	    fsync_component(FSYNC_COMPONENT_REFERENCE, get_lock_file_fd(&lock->lk)) < 0 ||
 	    close_ref_gently(lock) < 0) {
 		strbuf_addf(err,
 			    "couldn't write '%s'", get_lock_file_path(&lock->lk));
@@ -1833,12 +1848,10 @@ static int commit_ref_update(struct files_ref_store *refs,
 		 */
 		int head_flag;
 		const char *head_ref;
-		int ignore_errno;
 
 		head_ref = refs_resolve_ref_unsafe(&refs->base, "HEAD",
 						   RESOLVE_REF_READING,
-						   NULL, &head_flag,
-						   &ignore_errno);
+						   NULL, &head_flag);
 		if (head_ref && (head_flag & REF_ISSYMREF) &&
 		    !strcmp(head_ref, lock->ref_name)) {
 			struct strbuf log_err = STRBUF_INIT;
@@ -1882,12 +1895,10 @@ static void update_symref_reflog(struct files_ref_store *refs,
 {
 	struct strbuf err = STRBUF_INIT;
 	struct object_id new_oid;
-	int ignore_errno;
 
 	if (logmsg &&
 	    refs_resolve_ref_unsafe(&refs->base, target,
-				    RESOLVE_REF_READING, &new_oid, NULL,
-				    &ignore_errno) &&
+				    RESOLVE_REF_READING, &new_oid, NULL) &&
 	    files_log_ref_write(refs, refname, &lock->old_oid,
 				&new_oid, logmsg, 0, &err)) {
 		error("%s", err.buf);
@@ -2161,7 +2172,6 @@ static int files_reflog_iterator_advance(struct ref_iterator *ref_iterator)
 		(struct files_reflog_iterator *)ref_iterator;
 	struct dir_iterator *diter = iter->dir_iterator;
 	int ok;
-	int ignore_errno;
 
 	while ((ok = dir_iterator_advance(diter)) == ITER_OK) {
 		int flags;
@@ -2175,8 +2185,7 @@ static int files_reflog_iterator_advance(struct ref_iterator *ref_iterator)
 
 		if (!refs_resolve_ref_unsafe(iter->ref_store,
 					     diter->relative_path, 0,
-					     &iter->oid, &flags,
-					     &ignore_errno)) {
+					     &iter->oid, &flags)) {
 			error("bad ref for %s", diter->path.buf);
 			continue;
 		}
@@ -2213,9 +2222,9 @@ static int files_reflog_iterator_abort(struct ref_iterator *ref_iterator)
 }
 
 static struct ref_iterator_vtable files_reflog_iterator_vtable = {
-	files_reflog_iterator_advance,
-	files_reflog_iterator_peel,
-	files_reflog_iterator_abort
+	.advance = files_reflog_iterator_advance,
+	.peel = files_reflog_iterator_peel,
+	.abort = files_reflog_iterator_abort,
 };
 
 static struct ref_iterator *reflog_iterator_begin(struct ref_store *ref_store,
@@ -2520,11 +2529,9 @@ static int lock_ref_for_update(struct files_ref_store *refs,
 			 * the transaction, so we have to read it here
 			 * to record and possibly check old_oid:
 			 */
-			int ignore_errno;
 			if (!refs_resolve_ref_unsafe(&refs->base,
 						     referent.buf, 0,
-						     &lock->old_oid, NULL,
-						     &ignore_errno)) {
+						     &lock->old_oid, NULL)) {
 				if (update->flags & REF_HAVE_OLD) {
 					strbuf_addf(err, "cannot lock ref '%s': "
 						    "error reading reference",
@@ -3086,11 +3093,12 @@ cleanup:
 }
 
 struct expire_reflog_cb {
-	unsigned int flags;
 	reflog_expiry_should_prune_fn *should_prune_fn;
 	void *policy_cb;
 	FILE *newlog;
 	struct object_id last_kept_oid;
+	unsigned int rewrite:1,
+		     dry_run:1;
 };
 
 static int expire_reflog_ent(struct object_id *ooid, struct object_id *noid,
@@ -3098,33 +3106,27 @@ static int expire_reflog_ent(struct object_id *ooid, struct object_id *noid,
 			     const char *message, void *cb_data)
 {
 	struct expire_reflog_cb *cb = cb_data;
-	struct expire_reflog_policy_cb *policy_cb = cb->policy_cb;
+	reflog_expiry_should_prune_fn *fn = cb->should_prune_fn;
 
-	if (cb->flags & EXPIRE_REFLOGS_REWRITE)
+	if (cb->rewrite)
 		ooid = &cb->last_kept_oid;
 
-	if ((*cb->should_prune_fn)(ooid, noid, email, timestamp, tz,
-				   message, policy_cb)) {
-		if (!cb->newlog)
-			printf("would prune %s", message);
-		else if (cb->flags & EXPIRE_REFLOGS_VERBOSE)
-			printf("prune %s", message);
-	} else {
-		if (cb->newlog) {
-			fprintf(cb->newlog, "%s %s %s %"PRItime" %+05d\t%s",
-				oid_to_hex(ooid), oid_to_hex(noid),
-				email, timestamp, tz, message);
-			oidcpy(&cb->last_kept_oid, noid);
-		}
-		if (cb->flags & EXPIRE_REFLOGS_VERBOSE)
-			printf("keep %s", message);
-	}
+	if (fn(ooid, noid, email, timestamp, tz, message, cb->policy_cb))
+		return 0;
+
+	if (cb->dry_run)
+		return 0; /* --dry-run */
+
+	fprintf(cb->newlog, "%s %s %s %"PRItime" %+05d\t%s", oid_to_hex(ooid),
+		oid_to_hex(noid), email, timestamp, tz, message);
+	oidcpy(&cb->last_kept_oid, noid);
+
 	return 0;
 }
 
 static int files_reflog_expire(struct ref_store *ref_store,
 			       const char *refname,
-			       unsigned int flags,
+			       unsigned int expire_flags,
 			       reflog_expiry_prepare_fn prepare_fn,
 			       reflog_expiry_should_prune_fn should_prune_fn,
 			       reflog_expiry_cleanup_fn cleanup_fn,
@@ -3142,7 +3144,8 @@ static int files_reflog_expire(struct ref_store *ref_store,
 	const struct object_id *oid;
 
 	memset(&cb, 0, sizeof(cb));
-	cb.flags = flags;
+	cb.rewrite = !!(expire_flags & EXPIRE_REFLOGS_REWRITE);
+	cb.dry_run = !!(expire_flags & EXPIRE_REFLOGS_DRY_RUN);
 	cb.policy_cb = policy_cb_data;
 	cb.should_prune_fn = should_prune_fn;
 
@@ -3178,7 +3181,7 @@ static int files_reflog_expire(struct ref_store *ref_store,
 
 	files_reflog_path(refs, &log_file_sb, refname);
 	log_file = strbuf_detach(&log_file_sb, NULL);
-	if (!(flags & EXPIRE_REFLOGS_DRY_RUN)) {
+	if (!cb.dry_run) {
 		/*
 		 * Even though holding $GIT_DIR/logs/$reflog.lock has
 		 * no locking implications, we use the lock_file
@@ -3205,7 +3208,7 @@ static int files_reflog_expire(struct ref_store *ref_store,
 	refs_for_each_reflog_ent(ref_store, refname, expire_reflog_ent, &cb);
 	(*cleanup_fn)(cb.policy_cb);
 
-	if (!(flags & EXPIRE_REFLOGS_DRY_RUN)) {
+	if (!cb.dry_run) {
 		/*
 		 * It doesn't make sense to adjust a reference pointed
 		 * to by a symbolic ref based on expiring entries in
@@ -3215,16 +3218,14 @@ static int files_reflog_expire(struct ref_store *ref_store,
 		 */
 		int update = 0;
 
-		if ((flags & EXPIRE_REFLOGS_UPDATE_REF) &&
+		if ((expire_flags & EXPIRE_REFLOGS_UPDATE_REF) &&
 		    !is_null_oid(&cb.last_kept_oid)) {
-			int ignore_errno;
 			int type;
 			const char *ref;
 
 			ref = refs_resolve_ref_unsafe(&refs->base, refname,
 						      RESOLVE_REF_NO_RECURSE,
-						      NULL, &type,
-						      &ignore_errno);
+						      NULL, &type);
 			update = !!(ref && !(type & REF_ISSYMREF));
 		}
 
@@ -3279,29 +3280,30 @@ static int files_init_db(struct ref_store *ref_store, struct strbuf *err)
 }
 
 struct ref_storage_be refs_be_files = {
-	NULL,
-	"files",
-	files_ref_store_create,
-	files_init_db,
-	files_transaction_prepare,
-	files_transaction_finish,
-	files_transaction_abort,
-	files_initial_transaction_commit,
+	.next = NULL,
+	.name = "files",
+	.init = files_ref_store_create,
+	.init_db = files_init_db,
+	.transaction_prepare = files_transaction_prepare,
+	.transaction_finish = files_transaction_finish,
+	.transaction_abort = files_transaction_abort,
+	.initial_transaction_commit = files_initial_transaction_commit,
 
-	files_pack_refs,
-	files_create_symref,
-	files_delete_refs,
-	files_rename_ref,
-	files_copy_ref,
+	.pack_refs = files_pack_refs,
+	.create_symref = files_create_symref,
+	.delete_refs = files_delete_refs,
+	.rename_ref = files_rename_ref,
+	.copy_ref = files_copy_ref,
 
-	files_ref_iterator_begin,
-	files_read_raw_ref,
+	.iterator_begin = files_ref_iterator_begin,
+	.read_raw_ref = files_read_raw_ref,
+	.read_symbolic_ref = files_read_symbolic_ref,
 
-	files_reflog_iterator_begin,
-	files_for_each_reflog_ent,
-	files_for_each_reflog_ent_reverse,
-	files_reflog_exists,
-	files_create_reflog,
-	files_delete_reflog,
-	files_reflog_expire
+	.reflog_iterator_begin = files_reflog_iterator_begin,
+	.for_each_reflog_ent = files_for_each_reflog_ent,
+	.for_each_reflog_ent_reverse = files_for_each_reflog_ent_reverse,
+	.reflog_exists = files_reflog_exists,
+	.create_reflog = files_create_reflog,
+	.delete_reflog = files_delete_reflog,
+	.reflog_expire = files_reflog_expire
 };

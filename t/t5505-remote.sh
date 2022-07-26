@@ -78,6 +78,40 @@ test_expect_success 'add another remote' '
 	)
 '
 
+test_expect_success 'setup bare clone for server' '
+	git clone --bare "file://$(pwd)/one" srv.bare &&
+	git -C srv.bare config --local uploadpack.allowfilter 1 &&
+	git -C srv.bare config --local uploadpack.allowanysha1inwant 1
+'
+
+test_expect_success 'filters for promisor remotes are listed by git remote -v' '
+	test_when_finished "rm -rf pc" &&
+	git clone --filter=blob:none "file://$(pwd)/srv.bare" pc &&
+	git -C pc remote -v >out &&
+	grep "srv.bare (fetch) \[blob:none\]" out &&
+
+	git -C pc config remote.origin.partialCloneFilter object:type=commit &&
+	git -C pc remote -v >out &&
+	grep "srv.bare (fetch) \[object:type=commit\]" out
+'
+
+test_expect_success 'filters should not be listed for non promisor remotes (remote -v)' '
+	test_when_finished "rm -rf pc" &&
+	git clone one pc &&
+	git -C pc remote -v >out &&
+	! grep "(fetch) \[.*\]" out
+'
+
+test_expect_success 'filters are listed by git remote -v only' '
+	test_when_finished "rm -rf pc" &&
+	git clone --filter=blob:none "file://$(pwd)/srv.bare" pc &&
+	git -C pc remote >out &&
+	! grep "\[blob:none\]" out &&
+
+	git -C pc remote show >out &&
+	! grep "\[blob:none\]" out
+'
+
 test_expect_success 'check remote-tracking' '
 	(
 		cd test &&
@@ -266,6 +300,52 @@ test_expect_success 'show' '
 		git branch -d rebase octopus &&
 		test_cmp expect output
 	)
+'
+
+cat >expect <<EOF
+* remote origin
+  Fetch URL: $(pwd)/one
+  Push  URL: $(pwd)/one
+  HEAD branch: main
+  Remote branches:
+    main skipped
+    side tracked
+  Local branches configured for 'git pull':
+    ahead merges with remote main
+    main  merges with remote main
+  Local refs configured for 'git push':
+    main pushes to main     (local out of date)
+    main pushes to upstream (create)
+EOF
+
+test_expect_success 'show with negative refspecs' '
+	test_when_finished "git -C test config --unset-all --fixed-value remote.origin.fetch ^refs/heads/main" &&
+	git -C test config --add remote.origin.fetch ^refs/heads/main &&
+	git -C test remote show origin >output &&
+	test_cmp expect output
+'
+
+cat >expect <<EOF
+* remote origin
+  Fetch URL: $(pwd)/one
+  Push  URL: $(pwd)/one
+  HEAD branch: main
+  Remote branches:
+    main new (next fetch will store in remotes/origin)
+    side stale (use 'git remote prune' to remove)
+  Local branches configured for 'git pull':
+    ahead merges with remote main
+    main  merges with remote main
+  Local refs configured for 'git push':
+    main pushes to main     (local out of date)
+    main pushes to upstream (create)
+EOF
+
+test_expect_failure 'show stale with negative refspecs' '
+	test_when_finished "git -C test config --unset-all --fixed-value remote.origin.fetch ^refs/heads/side" &&
+	git -C test config --add remote.origin.fetch ^refs/heads/side &&
+	git -C test remote show origin >output &&
+	test_cmp expect output
 '
 
 cat >test/expect <<EOF
@@ -753,7 +833,9 @@ test_expect_success 'rename a remote' '
 	(
 		cd four &&
 		git config branch.main.pushRemote origin &&
-		git remote rename origin upstream &&
+		GIT_TRACE2_EVENT=$(pwd)/trace \
+			git remote rename --progress origin upstream &&
+		test_region progress "Renaming remote references" trace &&
 		grep "pushRemote" .git/config &&
 		test -z "$(git for-each-ref refs/remotes/origin)" &&
 		test "$(git symbolic-ref refs/remotes/upstream/HEAD)" = "refs/remotes/upstream/main" &&
@@ -921,11 +1003,12 @@ test_expect_success 'migrate a remote from named file in $GIT_DIR/remotes' '
 '
 
 test_expect_success 'migrate a remote from named file in $GIT_DIR/branches' '
-	git clone one six &&
+	git clone --template= one six &&
 	origin_url=$(pwd)/one &&
 	(
 		cd six &&
 		git remote rm origin &&
+		mkdir .git/branches &&
 		echo "$origin_url#main" >.git/branches/origin &&
 		git remote rename origin origin &&
 		test_path_is_missing .git/branches/origin &&
@@ -936,10 +1019,11 @@ test_expect_success 'migrate a remote from named file in $GIT_DIR/branches' '
 '
 
 test_expect_success 'migrate a remote from named file in $GIT_DIR/branches (2)' '
-	git clone one seven &&
+	git clone --template= one seven &&
 	(
 		cd seven &&
 		git remote rm origin &&
+		mkdir .git/branches &&
 		echo "quux#foom" > .git/branches/origin &&
 		git remote rename origin origin &&
 		test_path_is_missing .git/branches/origin &&

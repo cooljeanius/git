@@ -5,6 +5,13 @@ GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
 . ./test-lib.sh
+
+if test_have_prereq !REFFILES
+then
+	skip_all='skipping test; dumb HTTP protocol not supported with reftable.'
+	test_done
+fi
+
 . "$TEST_DIRECTORY"/lib-httpd.sh
 start_httpd
 
@@ -18,16 +25,17 @@ test_expect_success 'setup repository' '
 	git commit -m two
 '
 
+setup_post_update_server_info_hook () {
+	test_hook --setup -C "$1" post-update <<-\EOF &&
+	exec git update-server-info
+	EOF
+	git -C "$1" update-server-info
+}
+
 test_expect_success 'create http-accessible bare repository with loose objects' '
 	cp -R .git "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
-	(cd "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
-	 git config core.bare true &&
-	 mkdir -p hooks &&
-	 write_script "hooks/post-update" <<-\EOF &&
-	 exec git update-server-info
-	EOF
-	 hooks/post-update
-	) &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" config core.bare true &&
+	setup_post_update_server_info_hook "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
 	git remote add public "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" &&
 	git push public main:main
 '
@@ -55,13 +63,7 @@ test_expect_success 'create password-protected repository' '
 
 test_expect_success 'create empty remote repository' '
 	git init --bare "$HTTPD_DOCUMENT_ROOT_PATH/empty.git" &&
-	(cd "$HTTPD_DOCUMENT_ROOT_PATH/empty.git" &&
-	 mkdir -p hooks &&
-	 write_script "hooks/post-update" <<-\EOF &&
-	 exec git update-server-info
-	EOF
-	 hooks/post-update
-	)
+	setup_post_update_server_info_hook "$HTTPD_DOCUMENT_ROOT_PATH/empty.git"
 '
 
 test_expect_success 'empty dumb HTTP repository has default hash algorithm' '
@@ -367,7 +369,7 @@ ja;q=0.95, zh;q=0.94, sv;q=0.93, pt;q=0.92, nb;q=0.91, *;q=0.90" \
 		ko_KR.EUC-KR:en_US.UTF-8:fr_CA:de.UTF-8@euro:sr@latin:ja:zh:sv:pt:nb
 '
 
-test_expect_success 'git client does not send an empty Accept-Language' '
+test_expect_success 'git client send an empty Accept-Language' '
 	GIT_TRACE_CURL=true LANGUAGE= git ls-remote "$HTTPD_URL/dumb/repo.git" 2>stderr &&
 	! grep "^=> Send header: Accept-Language:" stderr
 '
@@ -420,7 +422,8 @@ test_expect_success 'set up evil alternates scheme' '
 	sha1=$(git -C "$victim" rev-parse HEAD) &&
 
 	evil=$HTTPD_DOCUMENT_ROOT_PATH/evil.git &&
-	git init --bare "$evil" &&
+	git init --template= --bare "$evil" &&
+	mkdir "$evil/info" &&
 	# do this by hand to avoid object existence check
 	printf "%s\\t%s\\n" $sha1 refs/heads/main >"$evil/info/refs"
 '

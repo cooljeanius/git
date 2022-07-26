@@ -9,6 +9,19 @@ Backward compatibility warts
  * "_" is now treated as any other URL-valid characters in an URL when
    matching the per-URL configuration variable names.
 
+ * The color palette used by "git grep" has been updated to match that
+   of GNU grep.
+
+
+Note to those who build from the source
+
+ * You may need to define NO_UNCOMPRESS2 Makefile macro if you build
+   with zlib older than 1.2.9.
+
+ * If your compiler cannot grok C99, the build will fail.  See the
+   instruction at the beginning of git-compat-util.h if this happens
+   to you.
+
 
 UI, Workflows & Features
 
@@ -65,6 +78,29 @@ UI, Workflows & Features
  * The "init" and "set" subcommands in "git sparse-checkout" have been
    unified for a better user experience and performance.
 
+ * Many git commands that deal with working tree files try to remove a
+   directory that becomes empty (i.e. "git switch" from a branch that
+   has the directory to another branch that does not would attempt
+   remove all files in the directory and the directory itself).  This
+   drops users into an unfamiliar situation if the command was run in
+   a subdirectory that becomes subject to removal due to the command.
+   The commands have been taught to keep an empty directory if it is
+   the directory they were started in to avoid surprising users.
+
+ * "git am" learns "--empty=(stop|drop|keep)" option to tweak what is
+   done to a piece of e-mail without a patch in it.
+
+ * The default merge message prepared by "git merge" records the name
+   of the current branch; the name can be overridden with a new option
+   to allow users to pretend a merge is made on a different branch.
+
+ * The way "git p4" shows file sizes in its output has been updated to
+   use human-readable units.
+
+ * "git -c branch.autosetupmerge=inherit branch new old" makes "new"
+   to have the same upstream as the "old" branch, instead of marking
+   "old" itself as its upstream.
+
 
 Performance, Internal Implementation, Development Support etc.
 
@@ -74,7 +110,7 @@ Performance, Internal Implementation, Development Support etc.
  * Teach and encourage first-time contributors to this project to
    state the base commit when they submit their topic.
 
- * The command line complation for "git send-email" options have been
+ * The command line completion for "git send-email" options have been
    tweaked to make it easier to keep it in sync with the command itself.
 
  * Ensure that the sparseness of the in-core index matches the
@@ -140,6 +176,27 @@ Performance, Internal Implementation, Development Support etc.
    quarantine feature.
 
  * Broken &&-chains in the test scripts have been corrected.
+
+ * The RCS keyword substitution in "git p4" used to be done assuming
+   that the contents are UTF-8 text, which can trigger decoding
+   errors.  We now treat the contents as a bytestring for robustness
+   and correctness.
+
+ * The conditions to choose different definitions of the FLEX_ARRAY
+   macro for vendor compilers has been simplified to make it easier to
+   maintain.
+
+ * Correctness and performance update to "diff --color-moved" feature.
+
+ * "git upload-pack" (the other side of "git fetch") used a 8kB buffer
+   but most of its payload came on 64kB "packets".  The buffer size
+   has been enlarged so that such a packet fits.
+
+ * "git fetch" and "git pull" are now declared sparse-index clean.
+   Also "git ls-files" learns the "--sparse" option to help debugging.
+
+ * Similar message templates have been consolidated so that
+   translators need to work on fewer number of messages.
 
 
 Fixes since v2.34
@@ -265,6 +322,68 @@ Fixes since v2.34
    which has been corrected.
    (merge 17baeaf82d ab/fetch-set-upstream-while-detached later to maint).
 
+ * Among some code paths that ask an yes/no question, only one place
+   gave a prompt that looked different from the others, which has been
+   updated to match what the others create.
+   (merge 0fc8ed154c km/help-prompt-fix later to maint).
+
+ * "git log --invert-grep --author=<name>" used to exclude commits
+   written by the given author, but now "--invert-grep" only affects
+   the matches made by the "--grep=<pattern>" option.
+   (merge 794c000267 rs/log-invert-grep-with-headers later to maint).
+
+ * "git grep --perl-regexp" failed to match UTF-8 characters with
+   wildcard when the pattern consists only of ASCII letters, which has
+   been corrected.
+   (merge 32e3e8bc55 rs/pcre2-utf later to maint).
+
+ * Certain sparse-checkout patterns that are valid in non-cone mode
+   led to segfault in cone mode, which has been corrected.
+
+ * Use of certain "git rev-list" options with "git fast-export"
+   created nonsense results (the worst two of which being "--reverse"
+   and "--invert-grep --grep=<foo>").  The use of "--first-parent" is
+   made to behave a bit more sensible than before.
+   (merge 726a228dfb ws/fast-export-with-revision-options later to maint).
+
+ * Perf tests were run with end-user's shell, but it has been
+   corrected to use the shell specified by $TEST_SHELL_PATH.
+   (merge 9ccab75608 ja/perf-use-specified-shell later to maint).
+
+ * Fix dependency rules to generate hook-list.h header file.
+   (merge d3fd1a6667 ab/makefile-hook-list-dependency-fix later to maint).
+
+ * "git stash" by default triggers its "push" action, but its
+   implementation also made "git stash -h" to show short help only for
+   "git stash push", which has been corrected.
+   (merge ca7990cea5 ab/do-not-limit-stash-help-to-push later to maint).
+
+ * "git apply --3way" bypasses the attempt to do a three-way
+   application in more cases to address the regression caused by the
+   recent change to use direct application as a fallback.
+   (merge 34d607032c jz/apply-3-corner-cases later to maint).
+
+ * Fix performance-releated bug in "git subtree" (in contrib/).
+   (merge 3ce8888fb4 jl/subtree-check-parents-argument-passing-fix later to maint).
+
+ * Extend the guidance to choose the base commit to build your work
+   on, and hint/nudge contributors to read others' changes.
+   (merge fdfae830f8 jc/doc-submitting-patches-choice-of-base later to maint).
+
+ * A corner case bug in the ort merge strategy has been corrected.
+   (merge d30126c20d en/merge-ort-renorm-with-rename-delete-conflict-fix later to maint).
+
+ * "git stash apply" forgot to attempt restoring untracked files when
+   it failed to restore changes to tracked ones.
+   (merge 71cade5a0b en/stash-df-fix later to maint).
+
+ * Calling dynamically loaded functions on Windows has been corrected.
+   (merge 4a9b204920 ma/windows-dynload-fix later to maint).
+
+ * Some lockfile code called free() in signal-death code path, which
+   has been corrected.
+   (merge 58d4d7f1c5 ps/lockfile-cleanup-fix later to maint).
+
  * Other code cleanup, docfix, build fix, etc.
    (merge 74db416c9c cw/protocol-v2-doc-fix later to maint).
    (merge f9b2b6684d ja/doc-cleanup later to maint).
@@ -283,3 +402,11 @@ Fixes since v2.34
    (merge 2c68f577fc ew/cbtree-remove-unused-and-broken-cb-unlink later to maint).
    (merge eafd6e7e55 ab/die-with-bug later to maint).
    (merge 91028f7659 jc/grep-patterntype-default-doc later to maint).
+   (merge 47ca93d071 ds/repack-fixlets later to maint).
+   (merge e6a9bc0c60 rs/t4202-invert-grep-test-fix later to maint).
+   (merge deb5407a42 gh/gpg-doc-markup-fix later to maint).
+   (merge 999bba3e0b rs/daemon-plug-leak later to maint).
+   (merge 786eb1ba39 js/l10n-mention-ngettext-early-in-readme later to maint).
+   (merge 2f12b31b74 ab/makefile-msgfmt-wo-stats later to maint).
+   (merge 0517f591ca fs/gpg-unknown-key-test-fix later to maint).
+   (merge 97d6fb5a1f ma/header-dup-cleanup later to maint).

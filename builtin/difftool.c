@@ -217,7 +217,7 @@ static void changed_files(struct hashmap *result, const char *index_path,
 	update_index.use_shell = 0;
 	update_index.clean_on_exit = 1;
 	update_index.dir = workdir;
-	strvec_pushf(&update_index.env_array, "GIT_INDEX_FILE=%s", index_path);
+	strvec_pushf(&update_index.env, "GIT_INDEX_FILE=%s", index_path);
 	/* Ignore any errors of update-index */
 	run_command(&update_index);
 
@@ -230,7 +230,7 @@ static void changed_files(struct hashmap *result, const char *index_path,
 	diff_files.clean_on_exit = 1;
 	diff_files.out = -1;
 	diff_files.dir = workdir;
-	strvec_pushf(&diff_files.env_array, "GIT_INDEX_FILE=%s", index_path);
+	strvec_pushf(&diff_files.env, "GIT_INDEX_FILE=%s", index_path);
 	if (start_command(&diff_files))
 		die("could not obtain raw diff");
 	fp = xfdopen(diff_files.out, "r");
@@ -675,7 +675,7 @@ static int run_file_diff(int prompt, const char *prefix,
 
 	child->git_cmd = 1;
 	child->dir = prefix;
-	strvec_pushv(&child->env_array, env);
+	strvec_pushv(&child->env, env);
 
 	return run_command(child);
 }
@@ -730,10 +730,11 @@ int cmd_difftool(int argc, const char **argv, const char *prefix)
 		setenv(GIT_DIR_ENVIRONMENT, absolute_path(get_git_dir()), 1);
 		setenv(GIT_WORK_TREE_ENVIRONMENT, absolute_path(get_git_work_tree()), 1);
 	} else if (dir_diff)
-		die(_("--dir-diff is incompatible with --no-index"));
+		die(_("options '%s' and '%s' cannot be used together"), "--dir-diff", "--no-index");
 
-	if (use_gui_tool + !!difftool_cmd + !!extcmd > 1)
-		die(_("--gui, --tool and --extcmd are mutually exclusive"));
+	die_for_incompatible_opt3(use_gui_tool, "--gui",
+				  !!difftool_cmd, "--tool",
+				  !!extcmd, "--extcmd");
 
 	if (use_gui_tool)
 		setenv("GIT_MERGETOOL_GUI", "true", 1);

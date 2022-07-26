@@ -94,13 +94,13 @@ test_expect_success 'object with hash and type mismatch' '
 	)
 '
 
-test_expect_success POSIXPERM 'zlib corrupt loose object output ' '
+test_expect_success 'zlib corrupt loose object output ' '
 	git init --bare corrupt-loose-output &&
 	(
 		cd corrupt-loose-output &&
 		oid=$(git hash-object -w --stdin --literally </dev/null) &&
 		oidf=objects/$(test_oid_to_path "$oid") &&
-		chmod 755 $oidf &&
+		chmod +w $oidf &&
 		echo extra garbage >>$oidf &&
 
 		cat >expect.error <<-EOF &&
@@ -774,10 +774,19 @@ test_expect_success 'fsck finds problems in duplicate loose objects' '
 		# no "-d" here, so we end up with duplicates
 		git repack &&
 		# now corrupt the loose copy
-		file=$(sha1_file "$(git rev-parse HEAD)") &&
+		oid="$(git rev-parse HEAD)" &&
+		file=$(sha1_file "$oid") &&
 		rm "$file" &&
 		echo broken >"$file" &&
-		test_must_fail git fsck
+		test_must_fail git fsck 2>err &&
+
+		cat >expect <<-EOF &&
+		error: inflate: data stream error (incorrect header check)
+		error: unable to unpack header of $file
+		error: $oid: object corrupt or missing: $file
+		EOF
+		grep "^error: " err >actual &&
+		test_cmp expect actual
 	)
 '
 

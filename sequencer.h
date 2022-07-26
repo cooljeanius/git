@@ -49,6 +49,7 @@ struct replay_opts {
 	int reschedule_failed_exec;
 	int committer_date_is_author_date;
 	int ignore_date;
+	int commit_use_reference;
 
 	int mainline;
 
@@ -197,8 +198,7 @@ void commit_post_rewrite(struct repository *r,
 			 const struct commit *current_head,
 			 const struct object_id *new_head);
 
-void create_autostash(struct repository *r, const char *path,
-		      const char *default_reflog_action);
+void create_autostash(struct repository *r, const char *path);
 int save_autostash(const char *path);
 int apply_autostash(const char *path);
 int apply_autostash_oid(const char *stash_oid);

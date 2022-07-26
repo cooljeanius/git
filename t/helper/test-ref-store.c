@@ -96,6 +96,7 @@ static const char **get_store(const char **argv, struct ref_store **refs)
 			die("no such worktree: %s", gitdir);
 
 		*refs = get_worktree_ref_store(*p);
+		free_worktrees(worktrees);
 	} else
 		die("unknown backend %s", argv[0]);
 
@@ -180,10 +181,9 @@ static int cmd_resolve_ref(struct ref_store *refs, const char **argv)
 	int resolve_flags = arg_flags(*argv++, "resolve-flags", empty_flags);
 	int flags;
 	const char *ref;
-	int ignore_errno;
 
 	ref = refs_resolve_ref_unsafe(refs, refname, resolve_flags,
-				      &oid, &flags, &ignore_errno);
+				      &oid, &flags);
 	printf("%s %s 0x%x\n", oid_to_hex(&oid), ref ? ref : "(null)", flags);
 	return ref ? 0 : 1;
 }
@@ -269,7 +269,7 @@ static int cmd_delete_ref(struct ref_store *refs, const char **argv)
 	struct object_id old_oid;
 
 	if (get_oid_hex(sha1_buf, &old_oid))
-		die("not sha-1");
+		die("cannot parse %s as %s", sha1_buf, the_hash_algo->name);
 
 	return refs_delete_ref(refs, msg, refname, &old_oid, flags);
 }
@@ -284,9 +284,10 @@ static int cmd_update_ref(struct ref_store *refs, const char **argv)
 	struct object_id old_oid;
 	struct object_id new_oid;
 
-	if (get_oid_hex(old_sha1_buf, &old_oid) ||
-	    get_oid_hex(new_sha1_buf, &new_oid))
-		die("not sha-1");
+	if (get_oid_hex(old_sha1_buf, &old_oid))
+		die("cannot parse %s as %s", old_sha1_buf, the_hash_algo->name);
+	if (get_oid_hex(new_sha1_buf, &new_oid))
+		die("cannot parse %s as %s", new_sha1_buf, the_hash_algo->name);
 
 	return refs_update_ref(refs, msg, refname,
 			       &new_oid, &old_oid,

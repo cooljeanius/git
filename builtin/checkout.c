@@ -9,6 +9,7 @@
 #include "config.h"
 #include "diff.h"
 #include "dir.h"
+#include "hook.h"
 #include "ll-merge.h"
 #include "lockfile.h"
 #include "merge-recursive.h"
@@ -114,7 +115,7 @@ static void branch_info_release(struct branch_info *info)
 static int post_checkout_hook(struct commit *old_commit, struct commit *new_commit,
 			      int changed)
 {
-	return run_hook_le(NULL, "post-checkout",
+	return run_hooks_l("post-checkout",
 			   oid_to_hex(old_commit ? &old_commit->object.oid : null_oid()),
 			   oid_to_hex(new_commit ? &new_commit->object.oid : null_oid()),
 			   changed ? "1" : "0", NULL);
@@ -245,6 +246,7 @@ static int checkout_merged(int pos, const struct checkout *state,
 	struct cache_entry *ce = active_cache[pos];
 	const char *path = ce->name;
 	mmfile_t ancestor, ours, theirs;
+	enum ll_merge_result merge_status;
 	int status;
 	struct object_id oid;
 	mmbuffer_t result_buf;
@@ -275,13 +277,16 @@ static int checkout_merged(int pos, const struct checkout *state,
 	memset(&ll_opts, 0, sizeof(ll_opts));
 	git_config_get_bool("merge.renormalize", &renormalize);
 	ll_opts.renormalize = renormalize;
-	status = ll_merge(&result_buf, path, &ancestor, "base",
-			  &ours, "ours", &theirs, "theirs",
-			  state->istate, &ll_opts);
+	merge_status = ll_merge(&result_buf, path, &ancestor, "base",
+				&ours, "ours", &theirs, "theirs",
+				state->istate, &ll_opts);
 	free(ancestor.ptr);
 	free(ours.ptr);
 	free(theirs.ptr);
-	if (status < 0 || !result_buf.ptr) {
+	if (merge_status == LL_MERGE_BINARY_CONFLICT)
+		warning("Cannot merge binary files: %s (%s vs. %s)",
+			path, "ours", "theirs");
+	if (merge_status < 0 || !result_buf.ptr) {
 		free(result_buf.ptr);
 		return error(_("path '%s': cannot merge"), path);
 	}
@@ -298,7 +303,7 @@ static int checkout_merged(int pos, const struct checkout *state,
 	 * (it also writes the merge result to the object database even
 	 * when it may contain conflicts).
 	 */
-	if (write_object_file(result_buf.ptr, result_buf.size, blob_type, &oid))
+	if (write_object_file(result_buf.ptr, result_buf.size, OBJ_BLOB, &oid))
 		die(_("Unable to add merge result for '%s'"), path);
 	free(result_buf.ptr);
 	ce = make_transient_cache_entry(mode, &oid, path, 2, ce_mem_pool);
@@ -464,10 +469,10 @@ static int checkout_paths(const struct checkout_opts *opts,
 		die(_("'%s' cannot be used with updating paths"), "--detach");
 
 	if (opts->merge && opts->patch_mode)
-		die(_("'%s' cannot be used with %s"), "--merge", "--patch");
+		die(_("options '%s' and '%s' cannot be used together"), "--merge", "--patch");
 
 	if (opts->ignore_unmerged && opts->merge)
-		die(_("'%s' cannot be used with %s"),
+		die(_("options '%s' and '%s' cannot be used together"),
 		    opts->ignore_unmerged_opt, "-m");
 
 	if (opts->new_branch)
@@ -624,7 +629,7 @@ static void show_local_changes(struct object *head,
 	diff_setup_done(&rev.diffopt);
 	add_pending_object(&rev, head, NULL);
 	run_diff_index(&rev, 0);
-	object_array_clear(&rev.pending);
+	release_revisions(&rev);
 }
 
 static void describe_detached_head(const char *msg, struct commit *commit)
@@ -705,6 +710,26 @@ static void setup_branch_path(struct branch_info *branch)
 	branch->path = strbuf_detach(&buf, NULL);
 }
 
+static void init_topts(struct unpack_trees_options *topts, int merge,
+		       int show_progress, int overwrite_ignore,
+		       struct commit *old_commit)
+{
+	memset(topts, 0, sizeof(*topts));
+	topts->head_idx = -1;
+	topts->src_index = &the_index;
+	topts->dst_index = &the_index;
+
+	setup_unpack_trees_porcelain(topts, "checkout");
+
+	topts->initial_checkout = is_cache_unborn();
+	topts->update = 1;
+	topts->merge = 1;
+	topts->quiet = merge && old_commit;
+	topts->verbose_update = show_progress;
+	topts->fn = twoway_merge;
+	topts->preserve_ignored = !overwrite_ignore;
+}
+
 static int merge_working_tree(const struct checkout_opts *opts,
 			      struct branch_info *old_branch_info,
 			      struct branch_info *new_branch_info,
@@ -733,13 +758,7 @@ static int merge_working_tree(const struct checkout_opts *opts,
 		struct tree_desc trees[2];
 		struct tree *tree;
 		struct unpack_trees_options topts;
-
-		memset(&topts, 0, sizeof(topts));
-		topts.head_idx = -1;
-		topts.src_index = &the_index;
-		topts.dst_index = &the_index;
-
-		setup_unpack_trees_porcelain(&topts, "checkout");
+		const struct object_id *old_commit_oid;
 
 		refresh_cache(REFRESH_QUIET);
 
@@ -749,20 +768,21 @@ static int merge_working_tree(const struct checkout_opts *opts,
 		}
 
 		/* 2-way merge to the new branch */
-		topts.initial_checkout = is_cache_unborn();
-		topts.update = 1;
-		topts.merge = 1;
-		topts.quiet = opts->merge && old_branch_info->commit;
-		topts.verbose_update = opts->show_progress;
-		topts.fn = twoway_merge;
+		init_topts(&topts, opts->merge, opts->show_progress,
+			   opts->overwrite_ignore, old_branch_info->commit);
 		init_checkout_metadata(&topts.meta, new_branch_info->refname,
 				       new_branch_info->commit ?
 				       &new_branch_info->commit->object.oid :
 				       &new_branch_info->oid, NULL);
-		topts.preserve_ignored = !opts->overwrite_ignore;
-		tree = parse_tree_indirect(old_branch_info->commit ?
-					   &old_branch_info->commit->object.oid :
-					   the_hash_algo->empty_tree);
+
+		old_commit_oid = old_branch_info->commit ?
+			&old_branch_info->commit->object.oid :
+			the_hash_algo->empty_tree;
+		tree = parse_tree_indirect(old_commit_oid);
+		if (!tree)
+			die(_("unable to parse commit %s"),
+				oid_to_hex(old_commit_oid));
+
 		init_tree_desc(&trees[0], tree->buffer, tree->size);
 		parse_tree(new_tree);
 		tree = new_tree;
@@ -822,7 +842,7 @@ static int merge_working_tree(const struct checkout_opts *opts,
 			if (ret)
 				return ret;
 			o.ancestor = old_branch_info->name;
-			if (old_branch_info->name == NULL) {
+			if (!old_branch_info->name) {
 				strbuf_add_unique_abbrev(&old_commit_shortname,
 							 &old_branch_info->commit->object.oid,
 							 DEFAULT_ABBREV);
@@ -904,7 +924,8 @@ static void update_refs_for_switch(const struct checkout_opts *opts,
 				      opts->new_branch_force ? 1 : 0,
 				      opts->new_branch_log,
 				      opts->quiet,
-				      opts->track);
+				      opts->track,
+				      0);
 		free(new_branch_info->name);
 		free(new_branch_info->refname);
 		new_branch_info->name = xstrdup(opts->new_branch);
@@ -1069,6 +1090,7 @@ static void orphaned_commit_warning(struct commit *old_commit, struct commit *ne
 
 	/* Clean up objects used, as they will be reused. */
 	repo_clear_commit_marks(the_repository, ALL_REV_FLAGS);
+	release_revisions(&revs);
 }
 
 static int switch_branches(const struct checkout_opts *opts,
@@ -1094,9 +1116,6 @@ static int switch_branches(const struct checkout_opts *opts,
 		const char *p;
 		if (skip_prefix(old_branch_info.path, prefix, &p))
 			old_branch_info.name = xstrdup(p);
-		else
-			BUG("should be able to skip past '%s' in '%s'!",
-			    prefix, old_branch_info.path);
 	}
 
 	if (opts->new_orphan_branch && opts->orphan_from_empty_tree) {
@@ -1394,23 +1413,31 @@ static void die_expecting_a_branch(const struct branch_info *branch_info)
 {
 	struct object_id oid;
 	char *to_free;
+	int code;
 
 	if (dwim_ref(branch_info->name, strlen(branch_info->name), &oid, &to_free, 0) == 1) {
 		const char *ref = to_free;
 
 		if (skip_prefix(ref, "refs/tags/", &ref))
-			die(_("a branch is expected, got tag '%s'"), ref);
-		if (skip_prefix(ref, "refs/remotes/", &ref))
-			die(_("a branch is expected, got remote branch '%s'"), ref);
-		die(_("a branch is expected, got '%s'"), ref);
+			code = die_message(_("a branch is expected, got tag '%s'"), ref);
+		else if (skip_prefix(ref, "refs/remotes/", &ref))
+			code = die_message(_("a branch is expected, got remote branch '%s'"), ref);
+		else
+			code = die_message(_("a branch is expected, got '%s'"), ref);
 	}
-	if (branch_info->commit)
-		die(_("a branch is expected, got commit '%s'"), branch_info->name);
-	/*
-	 * This case should never happen because we already die() on
-	 * non-commit, but just in case.
-	 */
-	die(_("a branch is expected, got '%s'"), branch_info->name);
+	else if (branch_info->commit)
+		code = die_message(_("a branch is expected, got commit '%s'"), branch_info->name);
+	else
+		/*
+		 * This case should never happen because we already die() on
+		 * non-commit, but just in case.
+		 */
+		code = die_message(_("a branch is expected, got '%s'"), branch_info->name);
+
+	if (advice_enabled(ADVICE_SUGGEST_DETACHING_HEAD))
+		advise(_("If you want to detach HEAD at the commit, try again with the --detach option."));
+
+	exit(code);
 }
 
 static void die_if_some_operation_in_progress(void)
@@ -1549,8 +1576,10 @@ static struct option *add_common_switch_branch_options(
 {
 	struct option options[] = {
 		OPT_BOOL('d', "detach", &opts->force_detach, N_("detach HEAD at named commit")),
-		OPT_SET_INT('t', "track",  &opts->track, N_("set upstream info for new branch"),
-			BRANCH_TRACK_EXPLICIT),
+		OPT_CALLBACK_F('t', "track",  &opts->track, "(direct|inherit)",
+			N_("set branch tracking configuration"),
+			PARSE_OPT_OPTARG,
+			parse_opt_tracking_mode),
 		OPT__FORCE(&opts->force, N_("force checkout (throw away local modifications)"),
 			   PARSE_OPT_NOCOMPLETE),
 		OPT_STRING(0, "orphan", &opts->new_orphan_branch, N_("new-branch"), N_("new unparented branch")),
@@ -1603,9 +1632,10 @@ static int checkout_main(int argc, const char **argv, const char *prefix,
 	opts->show_progress = -1;
 
 	git_config(git_checkout_config, opts);
-
-	prepare_repo_settings(the_repository);
-	the_repository->settings.command_requires_full_index = 0;
+	if (the_repository->gitdir) {
+		prepare_repo_settings(the_repository);
+		the_repository->settings.command_requires_full_index = 0;
+	}
 
 	opts->track = BRANCH_TRACK_UNSPECIFIED;
 
@@ -1635,11 +1665,11 @@ static int checkout_main(int argc, const char **argv, const char *prefix,
 	}
 
 	if ((!!opts->new_branch + !!opts->new_branch_force + !!opts->new_orphan_branch) > 1)
-		die(_("-%c, -%c and --orphan are mutually exclusive"),
-				cb_option, toupper(cb_option));
+		die(_("options '-%c', '-%c', and '%s' cannot be used together"),
+			cb_option, toupper(cb_option), "--orphan");
 
 	if (opts->overlay_mode == 1 && opts->patch_mode)
-		die(_("-p and --overlay are mutually exclusive"));
+		die(_("options '%s' and '%s' cannot be used together"), "-p", "--overlay");
 
 	if (opts->checkout_index >= 0 || opts->checkout_worktree >= 0) {
 		if (opts->checkout_index < 0)
@@ -1746,19 +1776,19 @@ static int checkout_main(int argc, const char **argv, const char *prefix,
 
 	if (opts->pathspec_from_file) {
 		if (opts->pathspec.nr)
-			die(_("--pathspec-from-file is incompatible with pathspec arguments"));
+			die(_("'%s' and pathspec arguments cannot be used together"), "--pathspec-from-file");
 
 		if (opts->force_detach)
-			die(_("--pathspec-from-file is incompatible with --detach"));
+			die(_("options '%s' and '%s' cannot be used together"), "--pathspec-from-file", "--detach");
 
 		if (opts->patch_mode)
-			die(_("--pathspec-from-file is incompatible with --patch"));
+			die(_("options '%s' and '%s' cannot be used together"), "--pathspec-from-file", "--patch");
 
 		parse_pathspec_file(&opts->pathspec, 0,
 				    0,
 				    prefix, opts->pathspec_from_file, opts->pathspec_file_nul);
 	} else if (opts->pathspec_file_nul) {
-		die(_("--pathspec-file-nul requires --pathspec-from-file"));
+		die(_("the option '%s' requires '%s'"), "--pathspec-file-nul", "--pathspec-from-file");
 	}
 
 	opts->pathspec.recursive = 1;

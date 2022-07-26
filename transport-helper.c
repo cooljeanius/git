@@ -135,7 +135,7 @@ static struct child_process *get_helper(struct transport *transport)
 	helper->silent_exec_failure = 1;
 
 	if (have_git_dir())
-		strvec_pushf(&helper->env_array, "%s=%s",
+		strvec_pushf(&helper->env, "%s=%s",
 			     GIT_DIR_ENVIRONMENT, get_git_dir());
 
 	helper->trace2_child_class = helper->args.v[0]; /* "remote-<name>" */
@@ -714,6 +714,9 @@ static int fetch_refs(struct transport *transport,
 
 	if (data->transport_options.update_shallow)
 		set_helper_option(transport, "update-shallow", "true");
+
+	if (data->transport_options.refetch)
+		set_helper_option(transport, "refetch", "true");
 
 	if (data->transport_options.filter_options.choice) {
 		const char *spec = expand_list_objects_filter_spec(

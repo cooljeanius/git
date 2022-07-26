@@ -495,6 +495,9 @@ int get_sparse_checkout_patterns(struct pattern_list *pl);
 /* Remove the contents of path, but leave path itself. */
 #define REMOVE_DIR_KEEP_TOPLEVEL 04
 
+/* Remove the_original_cwd too */
+#define REMOVE_DIR_PURGE_ORIGINAL_CWD 0x08
+
 /*
  * Remove path and its contents, recursively. flags is a combination
  * of the above REMOVE_DIR_* constants. Return 0 on success.
@@ -504,7 +507,11 @@ int get_sparse_checkout_patterns(struct pattern_list *pl);
  */
 int remove_dir_recursively(struct strbuf *path, int flag);
 
-/* tries to remove the path with empty directories along it, ignores ENOENT */
+/*
+ * Tries to remove the path, along with leading empty directories so long as
+ * those empty directories are not startup_info->original_cwd.  Ignores
+ * ENOENT.
+ */
 int remove_path(const char *path);
 
 int fspathcmp(const char *a, const char *b);
@@ -571,4 +578,67 @@ void connect_work_tree_and_git_dir(const char *work_tree,
 void relocate_gitdir(const char *path,
 		     const char *old_git_dir,
 		     const char *new_git_dir);
+
+/**
+ * The "enum path_matches_kind" determines how path_match_flags() will
+ * behave. The flags come in sets, and one (and only one) must be
+ * provided out of each "set":
+ *
+ * PATH_MATCH_NATIVE:
+ *	Path separator is is_dir_sep()
+ * PATH_MATCH_XPLATFORM:
+ *	Path separator is is_xplatform_dir_sep()
+ *
+ * Do we use is_dir_sep() to check for a directory separator
+ * (*_NATIVE), or do we always check for '/' or '\' (*_XPLATFORM). The
+ * "*_NATIVE" version on Windows is the same as "*_XPLATFORM",
+ * everywhere else "*_NATIVE" means "only /".
+ *
+ * PATH_MATCH_STARTS_WITH_DOT_SLASH:
+ *	Match a path starting with "./"
+ * PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH:
+ *	Match a path starting with "../"
+ *
+ * The "/" in the above is adjusted based on the "*_NATIVE" and
+ * "*_XPLATFORM" flags.
+ */
+enum path_match_flags {
+	PATH_MATCH_NATIVE = 1 << 0,
+	PATH_MATCH_XPLATFORM = 1 << 1,
+	PATH_MATCH_STARTS_WITH_DOT_SLASH = 1 << 2,
+	PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH = 1 << 3,
+};
+#define PATH_MATCH_KINDS_MASK (PATH_MATCH_STARTS_WITH_DOT_SLASH | \
+	PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH)
+#define PATH_MATCH_PLATFORM_MASK (PATH_MATCH_NATIVE | PATH_MATCH_XPLATFORM)
+
+/**
+ * path_match_flags() checks if a given "path" matches a given "enum
+ * path_match_flags" criteria.
+ */
+int path_match_flags(const char *const path, const enum path_match_flags f);
+
+/**
+ * starts_with_dot_slash_native(): convenience wrapper for
+ * path_match_flags() with PATH_MATCH_STARTS_WITH_DOT_SLASH and
+ * PATH_MATCH_NATIVE.
+ */
+static inline int starts_with_dot_slash_native(const char *const path)
+{
+	const enum path_match_flags what = PATH_MATCH_STARTS_WITH_DOT_SLASH;
+
+	return path_match_flags(path, what | PATH_MATCH_NATIVE);
+}
+
+/**
+ * starts_with_dot_slash_native(): convenience wrapper for
+ * path_match_flags() with PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH and
+ * PATH_MATCH_NATIVE.
+ */
+static inline int starts_with_dot_dot_slash_native(const char *const path)
+{
+	const enum path_match_flags what = PATH_MATCH_STARTS_WITH_DOT_DOT_SLASH;
+
+	return path_match_flags(path, what | PATH_MATCH_NATIVE);
+}
 #endif

@@ -134,7 +134,7 @@ int search_ref_dir(struct ref_dir *dir, const char *refname, size_t len)
 	r = bsearch(&key, dir->entries, dir->nr, sizeof(*dir->entries),
 		    ref_entry_cmp_sslice);
 
-	if (r == NULL)
+	if (!r)
 		return -1;
 
 	return r - dir->entries;
@@ -456,9 +456,9 @@ static int cache_ref_iterator_abort(struct ref_iterator *ref_iterator)
 }
 
 static struct ref_iterator_vtable cache_ref_iterator_vtable = {
-	cache_ref_iterator_advance,
-	cache_ref_iterator_peel,
-	cache_ref_iterator_abort
+	.advance = cache_ref_iterator_advance,
+	.peel = cache_ref_iterator_peel,
+	.abort = cache_ref_iterator_abort
 };
 
 struct ref_iterator *cache_ref_iterator_begin(struct ref_cache *cache,

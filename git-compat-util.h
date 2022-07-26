@@ -46,14 +46,23 @@
 /*
  * See if our compiler is known to support flexible array members.
  */
-#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L) && (!defined(__SUNPRO_C) || (__SUNPRO_C > 0x580))
-# define FLEX_ARRAY /* empty */
+
+/*
+ * Check vendor specific quirks first, before checking the
+ * __STDC_VERSION__, as vendor compilers can lie and we need to be
+ * able to work them around.  Note that by not defining FLEX_ARRAY
+ * here, we can fall back to use the "safer but a bit wasteful" one
+ * later.
+ */
+#if defined(__SUNPRO_C) && (__SUNPRO_C <= 0x580)
 #elif defined(__GNUC__)
 # if (__GNUC__ >= 3)
 #  define FLEX_ARRAY /* empty */
 # else
 #  define FLEX_ARRAY 0 /* older GNU extension */
 # endif
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 199901L)
+# define FLEX_ARRAY /* empty */
 #endif
 
 /*
@@ -227,6 +236,12 @@
 #include <sys/sysctl.h>
 #endif
 
+/* Used by compat/win32/path-utils.h, and more */
+static inline int is_xplatform_dir_sep(int c)
+{
+	return c == '/' || c == '\\';
+}
+
 #if defined(__CYGWIN__)
 #include "compat/win32/path-utils.h"
 #endif
@@ -257,6 +272,12 @@
 #include <inttypes.h>
 #else
 #include <stdint.h>
+#endif
+#ifdef HAVE_ARC4RANDOM_LIBBSD
+#include <bsd/stdlib.h>
+#endif
+#ifdef HAVE_GETRANDOM
+#include <sys/random.h>
 #endif
 #ifdef NO_INTPTR_T
 /*
@@ -401,11 +422,11 @@ static inline int git_skip_dos_drive_prefix(char **path)
 #define skip_dos_drive_prefix git_skip_dos_drive_prefix
 #endif
 
-#ifndef is_dir_sep
 static inline int git_is_dir_sep(int c)
 {
 	return c == '/';
 }
+#ifndef is_dir_sep
 #define is_dir_sep git_is_dir_sep
 #endif
 
@@ -419,6 +440,74 @@ static inline int git_offset_1st_component(const char *path)
 
 #ifndef is_valid_path
 #define is_valid_path(path) 1
+#endif
+
+#ifndef is_path_owned_by_current_user
+
+#ifdef __TANDEM
+#define ROOT_UID 65535
+#else
+#define ROOT_UID 0
+#endif
+
+/*
+ * Do not use this function when
+ * (1) geteuid() did not say we are running as 'root', or
+ * (2) using this function will compromise the system.
+ *
+ * PORTABILITY WARNING:
+ * This code assumes uid_t is unsigned because that is what sudo does.
+ * If your uid_t type is signed and all your ids are positive then it
+ * should all work fine.
+ * If your version of sudo uses negative values for uid_t or it is
+ * buggy and return an overflowed value in SUDO_UID, then git might
+ * fail to grant access to your repository properly or even mistakenly
+ * grant access to someone else.
+ * In the unlikely scenario this happened to you, and that is how you
+ * got to this message, we would like to know about it; so sent us an
+ * email to git@vger.kernel.org indicating which platform you are
+ * using and which version of sudo, so we can improve this logic and
+ * maybe provide you with a patch that would prevent this issue again
+ * in the future.
+ */
+static inline void extract_id_from_env(const char *env, uid_t *id)
+{
+	const char *real_uid = getenv(env);
+
+	/* discard anything empty to avoid a more complex check below */
+	if (real_uid && *real_uid) {
+		char *endptr = NULL;
+		unsigned long env_id;
+
+		errno = 0;
+		/* silent overflow errors could trigger a bug here */
+		env_id = strtoul(real_uid, &endptr, 10);
+		if (!*endptr && !errno)
+			*id = env_id;
+	}
+}
+
+static inline int is_path_owned_by_current_uid(const char *path)
+{
+	struct stat st;
+	uid_t euid;
+
+	if (lstat(path, &st))
+		return 0;
+
+	euid = geteuid();
+	if (euid == ROOT_UID)
+	{
+		if (st.st_uid == ROOT_UID)
+			return 1;
+		else
+			extract_id_from_env("SUDO_UID", &euid);
+	}
+
+	return st.st_uid == euid;
+}
+
+#define is_path_owned_by_current_user is_path_owned_by_current_uid
 #endif
 
 #ifndef find_last_dir_sep
@@ -489,11 +578,12 @@ static inline int git_has_dir_sep(const char *path)
 struct strbuf;
 
 /* General helper functions */
-void vreportf(const char *prefix, const char *err, va_list params);
 NORETURN void usage(const char *err);
 NORETURN void usagef(const char *err, ...) __attribute__((format (printf, 1, 2)));
 NORETURN void die(const char *err, ...) __attribute__((format (printf, 1, 2)));
 NORETURN void die_errno(const char *err, ...) __attribute__((format (printf, 1, 2)));
+int die_message(const char *err, ...) __attribute__((format (printf, 1, 2)));
+int die_message_errno(const char *err, ...) __attribute__((format (printf, 1, 2)));
 int error(const char *err, ...) __attribute__((format (printf, 1, 2)));
 int error_errno(const char *err, ...) __attribute__((format (printf, 1, 2)));
 void warning(const char *err, ...) __attribute__((format (printf, 1, 2)));
@@ -509,12 +599,14 @@ void warning_errno(const char *err, ...) __attribute__((format (printf, 1, 2)));
 #include <openssl/x509v3.h>
 #endif /* NO_OPENSSL */
 
+#ifdef HAVE_OPENSSL_CSPRNG
+#include <openssl/rand.h>
+#endif
+
 /*
  * Let callers be aware of the constant return value; this can help
  * gcc with -Wuninitialized analysis. We restrict this trick to gcc, though,
- * because some compilers may not support variadic macros. Since we're only
- * trying to help gcc, anyway, it's OK; other compilers will fall back to
- * using the function as usual.
+ * because other compilers may be confused by this.
  */
 #if defined(__GNUC__)
 static inline int const_error(void)
@@ -528,6 +620,7 @@ static inline int const_error(void)
 typedef void (*report_fn)(const char *, va_list params);
 
 void set_die_routine(NORETURN_PTR report_fn routine);
+report_fn get_die_message_routine(void);
 void set_error_routine(report_fn routine);
 report_fn get_error_routine(void);
 void set_warn_routine(report_fn routine);
@@ -1235,24 +1328,53 @@ static inline int regexec_buf(const regex_t *preg, const char *buf, size_t size,
 #endif
 #endif
 
-/*
- * This is always defined as a first step towards making the use of variadic
- * macros unconditional. If it causes compilation problems on your platform,
- * please report it to the Git mailing list at git@vger.kernel.org.
- */
-#define HAVE_VARIADIC_MACROS 1
-
 /* usage.c: only to be used for testing BUG() implementation (see test-tool) */
 extern int BUG_exit_code;
 
-#ifdef HAVE_VARIADIC_MACROS
+/* usage.c: if bug() is called we should have a BUG_if_bug() afterwards */
+extern int bug_called_must_BUG;
+
 __attribute__((format (printf, 3, 4))) NORETURN
 void BUG_fl(const char *file, int line, const char *fmt, ...);
 #define BUG(...) BUG_fl(__FILE__, __LINE__, __VA_ARGS__)
+__attribute__((format (printf, 3, 4)))
+void bug_fl(const char *file, int line, const char *fmt, ...);
+#define bug(...) bug_fl(__FILE__, __LINE__, __VA_ARGS__)
+#define BUG_if_bug(...) do { \
+	if (bug_called_must_BUG) \
+		BUG_fl(__FILE__, __LINE__, __VA_ARGS__); \
+} while (0)
+
+#ifndef FSYNC_METHOD_DEFAULT
+#ifdef __APPLE__
+#define FSYNC_METHOD_DEFAULT FSYNC_METHOD_WRITEOUT_ONLY
 #else
-__attribute__((format (printf, 1, 2))) NORETURN
-void BUG(const char *fmt, ...);
+#define FSYNC_METHOD_DEFAULT FSYNC_METHOD_FSYNC
 #endif
+#endif
+
+enum fsync_action {
+	FSYNC_WRITEOUT_ONLY,
+	FSYNC_HARDWARE_FLUSH
+};
+
+/*
+ * Issues an fsync against the specified file according to the specified mode.
+ *
+ * FSYNC_WRITEOUT_ONLY attempts to use interfaces available on some operating
+ * systems to flush the OS cache without issuing a flush command to the storage
+ * controller. If those interfaces are unavailable, the function fails with
+ * ENOSYS.
+ *
+ * FSYNC_HARDWARE_FLUSH does an OS writeout and hardware flush to ensure that
+ * changes are durable. It is not expected to fail.
+ */
+int git_fsync(int fd, enum fsync_action action);
+
+/*
+ * Writes out trace statistics for fsync using the trace2 API.
+ */
+void trace_git_fsync_stats(void);
 
 /*
  * Preserves errno, prints a message, but gives no warning for ENOENT.
@@ -1352,8 +1474,8 @@ int cmd_main(int, const char **);
  * Intercept all calls to exit() and route them to trace2 to
  * optionally emit a message before calling the real exit().
  */
-int trace2_cmd_exit_fl(const char *file, int line, int code);
-#define exit(code) exit(trace2_cmd_exit_fl(__FILE__, __LINE__, (code)))
+int common_exit(const char *file, int line, int code);
+#define exit(code) exit(common_exit(__FILE__, __LINE__, (code)))
 
 /*
  * You can mark a stack variable with UNLEAK(var) to avoid it being
@@ -1373,6 +1495,18 @@ void unleak_memory(const void *ptr, size_t len);
 #define UNLEAK(var) unleak_memory(&(var), sizeof(var))
 #else
 #define UNLEAK(var) do {} while (0)
+#endif
+
+#define z_const
+#include <zlib.h>
+
+#if ZLIB_VERNUM < 0x1290
+/*
+ * This is uncompress2, which is only available in zlib >= 1.2.9
+ * (released as of early 2017). See compat/zlib-uncompress2.c.
+ */
+int uncompress2(Bytef *dest, uLongf *destLen, const Bytef *source,
+		uLong *sourceLen);
 #endif
 
 /*
@@ -1420,5 +1554,12 @@ static inline void *container_of_or_null_offset(void *ptr, size_t offset)
 #endif /* !__GNUC__ */
 
 void sleep_millisec(int millisec);
+
+/*
+ * Generate len bytes from the system cryptographically secure PRNG.
+ * Returns 0 on success and -1 on error, setting errno.  The inability to
+ * satisfy the full request is an error.
+ */
+int csprng_bytes(void *buf, size_t len);
 
 #endif

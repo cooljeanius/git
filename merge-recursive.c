@@ -82,7 +82,7 @@ static struct dir_rename_entry *dir_rename_find_entry(struct hashmap *hashmap,
 {
 	struct dir_rename_entry key;
 
-	if (dir == NULL)
+	if (!dir)
 		return NULL;
 	hashmap_entry_init(&key.ent, strhash(dir));
 	key.dir = dir;
@@ -522,10 +522,10 @@ static struct stage_data *insert_stage_data(struct repository *r,
  */
 static struct string_list *get_unmerged(struct index_state *istate)
 {
-	struct string_list *unmerged = xcalloc(1, sizeof(struct string_list));
+	struct string_list *unmerged = xmalloc(sizeof(struct string_list));
 	int i;
 
-	unmerged->strdup_strings = 1;
+	string_list_init_dup(unmerged);
 
 	/* TODO: audit for interaction with sparse-index. */
 	ensure_full_index(istate);
@@ -1044,7 +1044,7 @@ static int merge_3way(struct merge_options *opt,
 	mmfile_t orig, src1, src2;
 	struct ll_merge_options ll_opts = {0};
 	char *base, *name1, *name2;
-	int merge_status;
+	enum ll_merge_result merge_status;
 
 	ll_opts.renormalize = opt->renormalize;
 	ll_opts.extra_marker_size = extra_marker_size;
@@ -1090,6 +1090,9 @@ static int merge_3way(struct merge_options *opt,
 	merge_status = ll_merge(result_buf, a->path, &orig, base,
 				&src1, name1, &src2, name2,
 				opt->repo->index, &ll_opts);
+	if (merge_status == LL_MERGE_BINARY_CONFLICT)
+		warning("Cannot merge binary files: %s (%s vs. %s)",
+			a->path, name1, name2);
 
 	free(base);
 	free(name1);
@@ -1157,6 +1160,7 @@ static int find_first_merges(struct repository *repo,
 	}
 
 	object_array_clear(&merges);
+	release_revisions(&revs);
 	return result->nr;
 }
 
@@ -1373,7 +1377,7 @@ static int merge_mode_and_contents(struct merge_options *opt,
 
 			if (!ret &&
 			    write_object_file(result_buf.ptr, result_buf.size,
-					      blob_type, &result->blob.oid))
+					      OBJ_BLOB, &result->blob.oid))
 				ret = err(opt, _("Unable to add %s to database"),
 					  a->path);
 
@@ -1987,14 +1991,14 @@ static void get_renamed_dir_portion(const char *old_path, const char *new_path,
 	 * renamed means the root directory can never be renamed -- because
 	 * the root directory always exists).
 	 */
-	if (end_of_old == NULL)
+	if (!end_of_old)
 		return; /* Note: *old_dir and *new_dir are still NULL */
 
 	/*
 	 * If new_path contains no directory (end_of_new is NULL), then we
 	 * have a rename of old_path's directory to the root directory.
 	 */
-	if (end_of_new == NULL) {
+	if (!end_of_new) {
 		*old_dir = xstrndup(old_path, end_of_old - old_path);
 		*new_dir = xstrdup("");
 		return;
@@ -2113,7 +2117,7 @@ static char *handle_path_level_conflicts(struct merge_options *opt,
 	 * to ensure that's the case.
 	 */
 	collision_ent = collision_find_entry(collisions, new_path);
-	if (collision_ent == NULL)
+	if (!collision_ent)
 		BUG("collision_ent is NULL");
 
 	/*
@@ -2993,7 +2997,7 @@ static void final_cleanup_rename(struct string_list *rename)
 	const struct rename *re;
 	int i;
 
-	if (rename == NULL)
+	if (!rename)
 		return;
 
 	for (i = 0; i < rename->nr; i++) {
@@ -3602,7 +3606,7 @@ static int merge_recursive_internal(struct merge_options *opt,
 	}
 
 	merged_merge_bases = pop_commit(&merge_bases);
-	if (merged_merge_bases == NULL) {
+	if (!merged_merge_bases) {
 		/* if there is no common ancestor, use an empty tree */
 		struct tree *tree;
 
@@ -3710,6 +3714,10 @@ static int merge_start(struct merge_options *opt, struct tree *head)
 	assert(opt->obuf.len == 0);
 
 	assert(opt->priv == NULL);
+
+	/* Not supported; option specific to merge-ort */
+	assert(!opt->record_conflict_msgs_as_headers);
+	assert(!opt->msg_header_prefix);
 
 	/* Sanity check on repo state; index must match head */
 	if (repo_index_has_changes(opt->repo, head, &sb)) {

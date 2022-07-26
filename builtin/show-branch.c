@@ -8,6 +8,7 @@
 #include "parse-options.h"
 #include "dir.h"
 #include "commit-slab.h"
+#include "date.h"
 
 static const char* show_branch_usage[] = {
     N_("git show-branch [-a | --all] [-r | --remotes] [--topo-order | --date-order]\n"
@@ -707,9 +708,13 @@ int cmd_show_branch(int ac, const char **av, const char *prefix)
 			 *
 			 * Also --all and --remotes do not make sense either.
 			 */
-			die(_("--reflog is incompatible with --all, --remotes, "
-			      "--independent or --merge-base"));
+			die(_("options '%s' and '%s' cannot be used together"), "--reflog",
+				"--all/--remotes/--independent/--merge-base");
 	}
+
+	if (with_current_branch && reflog)
+		die(_("options '%s' and '%s' cannot be used together"),
+		    "--reflog", "--current");
 
 	/* If nothing is specified, show all branches by default */
 	if (ac <= topics && all_heads + all_remotes == 0)

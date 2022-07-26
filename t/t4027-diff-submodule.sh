@@ -28,10 +28,8 @@ test_expect_success setup '
 		git commit -m "submodule #2"
 	) &&
 
-	set x $(
-		cd sub &&
-		git rev-list HEAD
-	) &&
+	git -C sub rev-list HEAD >revs &&
+	set x $(cat revs) &&
 	echo ":160000 160000 $3 $ZERO_OID M	sub" >expect &&
 	subtip=$3 subprev=$2
 '

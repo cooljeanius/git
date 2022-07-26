@@ -194,20 +194,19 @@ static int release_snapshot(struct snapshot *snapshot)
 }
 
 struct ref_store *packed_ref_store_create(struct repository *repo,
-					  const char *path,
+					  const char *gitdir,
 					  unsigned int store_flags)
 {
 	struct packed_ref_store *refs = xcalloc(1, sizeof(*refs));
 	struct ref_store *ref_store = (struct ref_store *)refs;
+	struct strbuf sb = STRBUF_INIT;
 
-	base_ref_store_init(ref_store, &refs_be_packed);
-	ref_store->repo = repo;
-	ref_store->gitdir = xstrdup(path);
+	base_ref_store_init(ref_store, repo, gitdir, &refs_be_packed);
 	refs->store_flags = store_flags;
 
-	refs->path = xstrdup(path);
+	strbuf_addf(&sb, "%s/packed-refs", gitdir);
+	refs->path = strbuf_detach(&sb, NULL);
 	chdir_notify_reparent("packed-refs", &refs->path);
-
 	return ref_store;
 }
 
@@ -912,9 +911,9 @@ static int packed_ref_iterator_abort(struct ref_iterator *ref_iterator)
 }
 
 static struct ref_iterator_vtable packed_ref_iterator_vtable = {
-	packed_ref_iterator_advance,
-	packed_ref_iterator_peel,
-	packed_ref_iterator_abort
+	.advance = packed_ref_iterator_advance,
+	.peel = packed_ref_iterator_peel,
+	.abort = packed_ref_iterator_abort
 };
 
 static struct ref_iterator *packed_ref_iterator_begin(
@@ -1263,7 +1262,8 @@ static int write_with_updates(struct packed_ref_store *refs,
 		goto error;
 	}
 
-	if (close_tempfile_gently(refs->tempfile)) {
+	if (fsync_component(FSYNC_COMPONENT_REFERENCE, get_tempfile_fd(refs->tempfile)) ||
+	    close_tempfile_gently(refs->tempfile)) {
 		strbuf_addf(err, "error closing file %s: %s",
 			    get_tempfile_path(refs->tempfile),
 			    strerror(errno));
@@ -1578,105 +1578,36 @@ static int packed_pack_refs(struct ref_store *ref_store, unsigned int flags)
 	return 0;
 }
 
-static int packed_create_symref(struct ref_store *ref_store,
-			       const char *refname, const char *target,
-			       const char *logmsg)
-{
-	BUG("packed reference store does not support symrefs");
-}
-
-static int packed_rename_ref(struct ref_store *ref_store,
-			    const char *oldrefname, const char *newrefname,
-			    const char *logmsg)
-{
-	BUG("packed reference store does not support renaming references");
-}
-
-static int packed_copy_ref(struct ref_store *ref_store,
-			   const char *oldrefname, const char *newrefname,
-			   const char *logmsg)
-{
-	BUG("packed reference store does not support copying references");
-}
-
 static struct ref_iterator *packed_reflog_iterator_begin(struct ref_store *ref_store)
 {
 	return empty_ref_iterator_begin();
 }
 
-static int packed_for_each_reflog_ent(struct ref_store *ref_store,
-				      const char *refname,
-				      each_reflog_ent_fn fn, void *cb_data)
-{
-	BUG("packed reference store does not support reflogs");
-	return 0;
-}
-
-static int packed_for_each_reflog_ent_reverse(struct ref_store *ref_store,
-					      const char *refname,
-					      each_reflog_ent_fn fn,
-					      void *cb_data)
-{
-	BUG("packed reference store does not support reflogs");
-	return 0;
-}
-
-static int packed_reflog_exists(struct ref_store *ref_store,
-			       const char *refname)
-{
-	BUG("packed reference store does not support reflogs");
-	return 0;
-}
-
-static int packed_create_reflog(struct ref_store *ref_store,
-				const char *refname, struct strbuf *err)
-{
-	BUG("packed reference store does not support reflogs");
-}
-
-static int packed_delete_reflog(struct ref_store *ref_store,
-			       const char *refname)
-{
-	BUG("packed reference store does not support reflogs");
-	return 0;
-}
-
-static int packed_reflog_expire(struct ref_store *ref_store,
-				const char *refname,
-				unsigned int flags,
-				reflog_expiry_prepare_fn prepare_fn,
-				reflog_expiry_should_prune_fn should_prune_fn,
-				reflog_expiry_cleanup_fn cleanup_fn,
-				void *policy_cb_data)
-{
-	BUG("packed reference store does not support reflogs");
-	return 0;
-}
-
 struct ref_storage_be refs_be_packed = {
-	NULL,
-	"packed",
-	packed_ref_store_create,
-	packed_init_db,
-	packed_transaction_prepare,
-	packed_transaction_finish,
-	packed_transaction_abort,
-	packed_initial_transaction_commit,
+	.next = NULL,
+	.name = "packed",
+	.init = packed_ref_store_create,
+	.init_db = packed_init_db,
+	.transaction_prepare = packed_transaction_prepare,
+	.transaction_finish = packed_transaction_finish,
+	.transaction_abort = packed_transaction_abort,
+	.initial_transaction_commit = packed_initial_transaction_commit,
 
-	packed_pack_refs,
-	packed_create_symref,
-	packed_delete_refs,
-	packed_rename_ref,
-	packed_copy_ref,
+	.pack_refs = packed_pack_refs,
+	.create_symref = NULL,
+	.delete_refs = packed_delete_refs,
+	.rename_ref = NULL,
+	.copy_ref = NULL,
 
-	packed_ref_iterator_begin,
-	packed_read_raw_ref,
+	.iterator_begin = packed_ref_iterator_begin,
+	.read_raw_ref = packed_read_raw_ref,
+	.read_symbolic_ref = NULL,
 
-	packed_reflog_iterator_begin,
-	packed_for_each_reflog_ent,
-	packed_for_each_reflog_ent_reverse,
-	packed_reflog_exists,
-	packed_create_reflog,
-	packed_delete_reflog,
-	packed_reflog_expire
+	.reflog_iterator_begin = packed_reflog_iterator_begin,
+	.for_each_reflog_ent = NULL,
+	.for_each_reflog_ent_reverse = NULL,
+	.reflog_exists = NULL,
+	.create_reflog = NULL,
+	.delete_reflog = NULL,
+	.reflog_expire = NULL,
 };

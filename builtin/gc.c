@@ -30,8 +30,8 @@
 #include "promisor-remote.h"
 #include "refs.h"
 #include "remote.h"
-#include "object-store.h"
 #include "exec-cmd.h"
+#include "hook.h"
 
 #define FAILED_RUN "failed to run %s"
 
@@ -42,6 +42,7 @@ static const char * const builtin_gc_usage[] = {
 
 static int pack_refs = 1;
 static int prune_reflogs = 1;
+static int cruft_packs = 0;
 static int aggressive_depth = 50;
 static int aggressive_window = 250;
 static int gc_auto_threshold = 6700;
@@ -152,6 +153,7 @@ static void gc_config(void)
 	git_config_get_int("gc.auto", &gc_auto_threshold);
 	git_config_get_int("gc.autopacklimit", &gc_auto_pack_limit);
 	git_config_get_bool("gc.autodetach", &detach_auto);
+	git_config_get_bool("gc.cruftpacks", &cruft_packs);
 	git_config_get_expiry("gc.pruneexpire", &prune_expire);
 	git_config_get_expiry("gc.worktreepruneexpire", &prune_worktrees_expire);
 	git_config_get_expiry("gc.logexpiry", &gc_log_expire);
@@ -166,9 +168,15 @@ struct maintenance_run_opts;
 static int maintenance_task_pack_refs(MAYBE_UNUSED struct maintenance_run_opts *opts)
 {
 	struct strvec pack_refs_cmd = STRVEC_INIT;
+	int ret;
+
 	strvec_pushl(&pack_refs_cmd, "pack-refs", "--all", "--prune", NULL);
 
-	return run_command_v_opt(pack_refs_cmd.v, RUN_GIT_CMD);
+	ret = run_command_v_opt(pack_refs_cmd.v, RUN_GIT_CMD);
+
+	strvec_clear(&pack_refs_cmd);
+
+	return ret;
 }
 
 static int too_many_loose_objects(void)
@@ -331,7 +339,11 @@ static void add_repack_all_option(struct string_list *keep_pack)
 {
 	if (prune_expire && !strcmp(prune_expire, "now"))
 		strvec_push(&repack, "-a");
-	else {
+	else if (cruft_packs) {
+		strvec_push(&repack, "--cruft");
+		if (prune_expire)
+			strvec_pushf(&repack, "--cruft-expiration=%s", prune_expire);
+	} else {
 		strvec_push(&repack, "-A");
 		if (prune_expire)
 			strvec_pushf(&repack, "--unpack-unreachable=%s", prune_expire);
@@ -394,7 +406,7 @@ static int need_to_gc(void)
 	else
 		return 0;
 
-	if (run_hook_le(NULL, "pre-auto-gc", NULL))
+	if (run_hooks("pre-auto-gc"))
 		return 0;
 	return 1;
 }
@@ -446,7 +458,7 @@ static const char *lock_repo_for_gc(int force, pid_t* ret_pid)
 			fscanf(fp, scan_fmt, &pid, locking_host) == 2 &&
 			/* be gentle to concurrent "gc" on remote hosts */
 			(strcmp(locking_host, my_host) || !kill(pid, 0) || errno == EPERM);
-		if (fp != NULL)
+		if (fp)
 			fclose(fp);
 		if (should_exit) {
 			if (fd >= 0)
@@ -470,7 +482,8 @@ static const char *lock_repo_for_gc(int force, pid_t* ret_pid)
 /*
  * Returns 0 if there was no previous error and gc can proceed, 1 if
  * gc should not proceed due to an error in the last run. Prints a
- * message and returns -1 if an error occurred while reading gc.log
+ * message and returns with a non-[01] status code if an error occurred
+ * while reading gc.log
  */
 static int report_last_gc_error(void)
 {
@@ -484,7 +497,7 @@ static int report_last_gc_error(void)
 		if (errno == ENOENT)
 			goto done;
 
-		ret = error_errno(_("cannot stat '%s'"), gc_log_path);
+		ret = die_message_errno(_("cannot stat '%s'"), gc_log_path);
 		goto done;
 	}
 
@@ -493,7 +506,7 @@ static int report_last_gc_error(void)
 
 	len = strbuf_read_file(&sb, gc_log_path, 0);
 	if (len < 0)
-		ret = error_errno(_("cannot read '%s'"), gc_log_path);
+		ret = die_message_errno(_("cannot read '%s'"), gc_log_path);
 	else if (len > 0) {
 		/*
 		 * A previous gc failed.  Report the error, and don't
@@ -550,6 +563,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 		{ OPTION_STRING, 0, "prune", &prune_expire, N_("date"),
 			N_("prune unreferenced objects"),
 			PARSE_OPT_OPTARG, NULL, (intptr_t)prune_expire },
+		OPT_BOOL(0, "cruft", &cruft_packs, N_("pack unreferenced objects separately")),
 		OPT_BOOL(0, "aggressive", &aggressive, N_("be more thorough (increased runtime)")),
 		OPT_BOOL_F(0, "auto", &auto_gc, N_("enable auto-gc mode"),
 			   PARSE_OPT_NOCOMPLETE),
@@ -573,7 +587,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 	/* default expiry time, overwritten in gc_config */
 	gc_config();
 	if (parse_expiry_date(gc_log_expire, &gc_log_expire_time))
-		die(_("failed to parse gc.logexpiry value %s"), gc_log_expire);
+		die(_("failed to parse gc.logExpiry value %s"), gc_log_expire);
 
 	if (pack_refs < 0)
 		pack_refs = !is_bare_repository();
@@ -611,12 +625,13 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 		}
 		if (detach_auto) {
 			int ret = report_last_gc_error();
-			if (ret < 0)
-				/* an I/O error occurred, already reported */
-				exit(128);
+
 			if (ret == 1)
 				/* Last gc --auto failed. Skip this one. */
 				return 0;
+			else if (ret)
+				/* an I/O error occurred, already reported */
+				return ret;
 
 			if (lock_repo_for_gc(force, &pid))
 				return 0;
@@ -668,6 +683,7 @@ int cmd_gc(int argc, const char **argv, const char *prefix)
 			die(FAILED_RUN, repack.v[0]);
 
 		if (prune_expire) {
+			/* run `git prune` even if using cruft packs */
 			strvec_push(&prune, prune_expire);
 			if (quiet)
 				strvec_push(&prune, "--no-progress");
@@ -2236,7 +2252,7 @@ static int systemd_timer_write_unit_templates(const char *exec_path)
 		goto error;
 	}
 	file = fopen_or_warn(filename, "w");
-	if (file == NULL)
+	if (!file)
 		goto error;
 
 	unit = "# This file was created and is maintained by Git.\n"
@@ -2265,7 +2281,7 @@ static int systemd_timer_write_unit_templates(const char *exec_path)
 
 	filename = xdg_config_home_systemd("git-maintenance@.service");
 	file = fopen_or_warn(filename, "w");
-	if (file == NULL)
+	if (!file)
 		goto error;
 
 	unit = "# This file was created and is maintained by Git.\n"

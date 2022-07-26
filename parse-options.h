@@ -85,6 +85,11 @@ typedef enum parse_opt_result parse_opt_ll_cb(struct parse_opt_ctx_t *ctx,
  *   token to explain the kind of argument this option wants. Does not
  *   begin in capital letter, and does not end with a full stop.
  *   Should be wrapped by N_() for translation.
+ *   Is automatically enclosed in brackets when printed, unless it
+ *   contains any of the following characters: ()<>[]|
+ *   E.g. "name" is shown as "<name>" to indicate that a name value
+ *   needs to be supplied, not the literal string "name", but
+ *   "<start>,<end>" and "(this|that)" are printed verbatim.
  *
  * `help`::
  *   the short help associated to what the option does.
@@ -225,6 +230,32 @@ NORETURN void usage_msg_opt(const char *msg,
 			    const char * const *usagestr,
 			    const struct option *options);
 
+/**
+ * usage_msg_optf() is like usage_msg_opt() except that the first
+ * argument is a format string, and optional format arguments follow
+ * after the 3rd option.
+ */
+__attribute__((format (printf,1,4)))
+void NORETURN usage_msg_optf(const char *fmt,
+			     const char * const *usagestr,
+			     const struct option *options, ...);
+
+void die_for_incompatible_opt4(int opt1, const char *opt1_name,
+			       int opt2, const char *opt2_name,
+			       int opt3, const char *opt3_name,
+			       int opt4, const char *opt4_name);
+
+
+static inline void die_for_incompatible_opt3(int opt1, const char *opt1_name,
+					     int opt2, const char *opt2_name,
+					     int opt3, const char *opt3_name)
+{
+	die_for_incompatible_opt4(opt1, opt1_name,
+				  opt2, opt2_name,
+				  opt3, opt3_name,
+				  0, "");
+}
+
 /*
  * Use these assertions for callbacks that expect to be called with NONEG and
  * NOARG respectively, and do not otherwise handle the "unset" and "arg"
@@ -301,6 +332,8 @@ enum parse_opt_result parse_opt_unknown_cb(struct parse_opt_ctx_t *ctx,
 					   const char *, int);
 int parse_opt_passthru(const struct option *, const char *, int);
 int parse_opt_passthru_argv(const struct option *, const char *, int);
+/* value is enum branch_track* */
+int parse_opt_tracking_mode(const struct option *, const char *, int);
 
 #define OPT__VERBOSE(var, h)  OPT_COUNTUP('v', "verbose", (var), (h))
 #define OPT__QUIET(var, h)    OPT_COUNTUP('q', "quiet",   (var), (h))

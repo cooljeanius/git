@@ -142,6 +142,19 @@ test_expect_success 'diff-filter=R' '
 
 '
 
+test_expect_success 'multiple --diff-filter bits' '
+
+	git log -M --pretty="format:%s" --diff-filter=R HEAD >expect &&
+	git log -M --pretty="format:%s" --diff-filter=Ra HEAD >actual &&
+	test_cmp expect actual &&
+	git log -M --pretty="format:%s" --diff-filter=aR HEAD >actual &&
+	test_cmp expect actual &&
+	git log -M --pretty="format:%s" \
+		--diff-filter=a --diff-filter=R HEAD >actual &&
+	test_cmp expect actual
+
+'
+
 test_expect_success 'diff-filter=C' '
 
 	git log -C -C --pretty="format:%s" --diff-filter=C HEAD >actual &&
@@ -250,7 +263,7 @@ test_expect_success 'log --invert-grep --grep' '
 	test_cmp expect actual &&
 
 	# POSIX extended
-	git -c grep.patternType=basic log --pretty="tformat:%s" --invert-grep --grep=t[h] --grep=S[e]c >actual &&
+	git -c grep.patternType=extended log --pretty="tformat:%s" --invert-grep --grep=t[h] --grep=S[e]c >actual &&
 	test_cmp expect actual &&
 
 	# PCRE
@@ -448,6 +461,29 @@ test_expect_success !FAIL_PREREQS 'log with various grep.patternType configurati
 		test_cmp expect.extended actual.extended.long-arg
 	)
 '
+
+for cmd in show whatchanged reflog format-patch
+do
+	case "$cmd" in
+	format-patch) myarg="HEAD~.." ;;
+	*) myarg= ;;
+	esac
+
+	test_expect_success "$cmd: understands grep.patternType, like 'log'" '
+		git init "pattern-type-$cmd" &&
+		(
+			cd "pattern-type-$cmd" &&
+			test_commit 1 file A &&
+			test_commit "(1|2)" file B 2 &&
+
+			git -c grep.patternType=fixed $cmd --grep="..." $myarg >actual &&
+			test_must_be_empty actual &&
+
+			git -c grep.patternType=basic $cmd --grep="..." $myarg >actual &&
+			test_file_not_empty actual
+		)
+	'
+done
 
 test_expect_success 'log --author' '
 	cat >expect <<-\EOF &&
@@ -659,7 +695,7 @@ EOF
 
 test_expect_success 'log --graph with full output' '
 	git log --graph --date-order --pretty=short |
-		git name-rev --name-only --stdin |
+		git name-rev --name-only --annotate-stdin |
 		sed "s/Merge:.*/Merge: A B/;s/ *\$//" >actual &&
 	test_cmp expect actual
 '
@@ -1671,6 +1707,75 @@ test_expect_success 'log --graph with --name-only' '
 	test_cmp_graph --name-only tangle..reach
 '
 
+test_expect_success '--no-graph countermands --graph' '
+	git log >expect &&
+	git log --graph --no-graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--graph countermands --no-graph' '
+	git log --graph >expect &&
+	git log --no-graph --graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--no-graph does not unset --topo-order' '
+	git log --topo-order >expect &&
+	git log --topo-order --no-graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--no-graph does not unset --parents' '
+	git log --parents >expect &&
+	git log --parents --no-graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--reverse and --graph conflict' '
+	test_must_fail git log --reverse --graph 2>stderr &&
+	test_i18ngrep "cannot be used together" stderr
+'
+
+test_expect_success '--reverse --graph --no-graph works' '
+	git log --reverse >expect &&
+	git log --reverse --graph --no-graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--show-linear-break and --graph conflict' '
+	test_must_fail git log --show-linear-break --graph 2>stderr &&
+	test_i18ngrep "cannot be used together" stderr
+'
+
+test_expect_success '--show-linear-break --graph --no-graph works' '
+	git log --show-linear-break >expect &&
+	git log --show-linear-break --graph --no-graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--no-walk and --graph conflict' '
+	test_must_fail git log --no-walk --graph 2>stderr &&
+	test_i18ngrep "cannot be used together" stderr
+'
+
+test_expect_success '--no-walk --graph --no-graph works' '
+	git log --no-walk >expect &&
+	git log --no-walk --graph --no-graph >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success '--walk-reflogs and --graph conflict' '
+	test_must_fail git log --walk-reflogs --graph 2>stderr &&
+	(test_i18ngrep "cannot combine" stderr ||
+		test_i18ngrep "cannot be used together" stderr)
+'
+
+test_expect_success '--walk-reflogs --graph --no-graph works' '
+	git log --walk-reflogs >expect &&
+	git log --walk-reflogs --graph --no-graph >actual &&
+	test_cmp expect actual
+'
+
 test_expect_success 'dotdot is a parent directory' '
 	mkdir -p a/b &&
 	( echo sixth && echo fifth ) >expect &&
@@ -1887,10 +1992,13 @@ test_expect_success GPG 'log --show-signature for merged tag with GPG failure' '
 	git tag -s -m signed_tag_msg signed_tag_fail &&
 	git checkout plain-fail &&
 	git merge --no-ff -m msg signed_tag_fail &&
-	TMPDIR="$(pwd)/bogus" git log --show-signature -n1 plain-fail >actual &&
-	grep "^merged tag" actual &&
-	grep "^No signature" actual &&
-	! grep "^gpg: Signature made" actual
+	if ! test_have_prereq VALGRIND
+	then
+		TMPDIR="$(pwd)/bogus" git log --show-signature -n1 plain-fail >actual &&
+		grep "^merged tag" actual &&
+		grep "^No signature" actual &&
+		! grep "^gpg: Signature made" actual
+	fi
 '
 
 test_expect_success GPGSM 'log --graph --show-signature for merged tag x509' '
@@ -1931,7 +2039,8 @@ test_expect_success GPGSM 'log --graph --show-signature for merged tag x509 miss
 	git merge --no-ff -m msg signed_tag_x509_nokey &&
 	GNUPGHOME=. git log --graph --show-signature -n1 plain-x509-nokey >actual &&
 	grep "^|\\\  merged tag" actual &&
-	grep "^| | gpgsm: certificate not found" actual
+	grep -e "^| | gpgsm: certificate not found" \
+	     -e "^| | gpgsm: failed to find the certificate: Not found" actual
 '
 
 test_expect_success GPGSM 'log --graph --show-signature for merged tag x509 bad signature' '
@@ -2088,6 +2197,25 @@ test_expect_success 'log --end-of-options' '
        git log --end-of-options --source >actual &&
        git log >expect &&
        test_cmp expect actual
+'
+
+test_expect_success 'set up commits with different authors' '
+	git checkout --orphan authors &&
+	test_commit --author "Jim <jim@example.com>" jim_1 &&
+	test_commit --author "Val <val@example.com>" val_1 &&
+	test_commit --author "Val <val@example.com>" val_2 &&
+	test_commit --author "Jim <jim@example.com>" jim_2 &&
+	test_commit --author "Val <val@example.com>" val_3 &&
+	test_commit --author "Jim <jim@example.com>" jim_3
+'
+
+test_expect_success 'log --invert-grep --grep --author' '
+	cat >expect <<-\EOF &&
+	val_3
+	val_1
+	EOF
+	git log --format=%s --author=Val --grep 2 --invert-grep >actual &&
+	test_cmp expect actual
 '
 
 test_done

@@ -19,6 +19,7 @@ setup_sparse_entry () {
 	fi &&
 	git add sparse_entry &&
 	git update-index --skip-worktree sparse_entry &&
+	git config core.sparseCheckout false &&
 	git commit --allow-empty -m "ensure sparse_entry exists at HEAD" &&
 	SPARSE_ENTRY_BLOB=$(git rev-parse :sparse_entry)
 }
@@ -126,6 +127,7 @@ test_expect_success 'git add --chmod does not update sparse entries' '
 '
 
 test_expect_success 'git add --renormalize does not update sparse entries' '
+	test_when_finished rm .gitattributes &&
 	test_config core.autocrlf false &&
 	setup_sparse_entry "LINEONE\r\nLINETWO\r\n" &&
 	echo "sparse_entry text=auto" >.gitattributes &&
@@ -164,7 +166,7 @@ test_expect_success 'do not warn when pathspec matches dense entries' '
 test_expect_success 'git add fails outside of sparse-checkout definition' '
 	test_when_finished git sparse-checkout disable &&
 	test_commit a &&
-	git sparse-checkout init &&
+	git sparse-checkout init --no-cone &&
 	git sparse-checkout set a &&
 	echo >>sparse_entry &&
 
@@ -181,13 +183,13 @@ test_expect_success 'git add fails outside of sparse-checkout definition' '
 	# Avoid munging CRLFs to avoid an error message
 	git -c core.autocrlf=input add --sparse sparse_entry 2>stderr &&
 	test_must_be_empty stderr &&
-	test-tool read-cache --table >actual &&
-	grep "^100644 blob.*sparse_entry\$" actual &&
+	git ls-files --stage >actual &&
+	grep "^100644 .*sparse_entry\$" actual &&
 
 	git add --sparse --chmod=+x sparse_entry 2>stderr &&
 	test_must_be_empty stderr &&
-	test-tool read-cache --table >actual &&
-	grep "^100755 blob.*sparse_entry\$" actual &&
+	git ls-files --stage >actual &&
+	grep "^100755 .*sparse_entry\$" actual &&
 
 	git reset &&
 
@@ -206,7 +208,7 @@ test_expect_success 'add obeys advice.updateSparsePath' '
 '
 
 test_expect_success 'add allows sparse entries with --sparse' '
-	git sparse-checkout set a &&
+	git sparse-checkout set --no-cone a &&
 	echo modified >sparse_entry &&
 	test_must_fail git add sparse_entry &&
 	test_sparse_entry_unchanged &&

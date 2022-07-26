@@ -70,6 +70,8 @@ void init_add_i_state(struct add_i_state *s, struct repository *r)
 			      &s->interactive_diff_algorithm);
 
 	git_config_get_bool("interactive.singlekey", &s->use_single_key);
+	if (s->use_single_key)
+		setbuf(stdin, NULL);
 }
 
 void clear_add_i_state(struct add_i_state *s)
@@ -566,8 +568,7 @@ static int get_modified_files(struct repository *r,
 			run_diff_files(&rev, 0);
 		}
 
-		if (ps)
-			clear_pathspec(&rev.prune_data);
+		release_revisions(&rev);
 	}
 	hashmap_clear_and_free(&s.file_map, struct pathname_entry, ent);
 	if (unmerged_count)
@@ -696,8 +697,16 @@ static int run_update(struct add_i_state *s, const struct pathspec *ps,
 
 	for (i = 0; i < files->items.nr; i++) {
 		const char *name = files->items.items[i].string;
-		if (files->selected[i] &&
-		    add_file_to_index(s->r->index, name, 0) < 0) {
+		struct stat st;
+
+		if (!files->selected[i])
+			continue;
+		if (lstat(name, &st) && is_missing_file_error(errno)) {
+			if (remove_file_from_index(s->r->index, name) < 0) {
+				res = error(_("could not stage '%s'"), name);
+				break;
+			}
+		} else if (add_file_to_index(s->r->index, name, 0) < 0) {
 			res = error(_("could not stage '%s'"), name);
 			break;
 		}
@@ -797,14 +806,14 @@ static int run_revert(struct add_i_state *s, const struct pathspec *ps,
 	diffopt.flags.override_submodule_config = 1;
 	diffopt.repo = s->r;
 
-	if (do_diff_cache(&oid, &diffopt))
+	if (do_diff_cache(&oid, &diffopt)) {
+		diff_free(&diffopt);
 		res = -1;
-	else {
+	} else {
 		diffcore_std(&diffopt);
 		diff_flush(&diffopt);
 	}
 	free(paths);
-	clear_pathspec(&diffopt.pathspec);
 
 	if (!res && write_locked_index(s->r->index, &index_lock,
 				       COMMIT_LOCK) < 0)

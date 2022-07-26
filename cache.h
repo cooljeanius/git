@@ -18,7 +18,6 @@
 #include "repository.h"
 #include "mem-pool.h"
 
-#include <zlib.h>
 typedef struct git_zstream {
 	z_stream z;
 	unsigned long avail_in;
@@ -311,6 +310,29 @@ struct untracked_cache;
 struct progress;
 struct pattern_list;
 
+enum sparse_index_mode {
+	/*
+	 * There are no sparse directories in the index at all.
+	 *
+	 * Repositories that don't use cone-mode sparse-checkout will
+	 * always have their indexes in this mode.
+	 */
+	INDEX_EXPANDED = 0,
+
+	/*
+	 * The index has already been collapsed to sparse directories
+	 * whereever possible.
+	 */
+	INDEX_COLLAPSED,
+
+	/*
+	 * The sparse directories that exist are outside the
+	 * sparse-checkout boundary, but it is possible that some file
+	 * entries could collapse to sparse directory entries.
+	 */
+	INDEX_PARTIALLY_SPARSE,
+};
+
 struct index_state {
 	struct cache_entry **cache;
 	unsigned int version;
@@ -324,14 +346,8 @@ struct index_state {
 		 drop_cache_tree : 1,
 		 updated_workdir : 1,
 		 updated_skipworktree : 1,
-		 fsmonitor_has_run_once : 1,
-
-		 /*
-		  * sparse_index == 1 when sparse-directory
-		  * entries exist. Requires sparse-checkout
-		  * in cone mode.
-		  */
-		 sparse_index : 1;
+		 fsmonitor_has_run_once : 1;
+	enum sparse_index_mode sparse_index;
 	struct hashmap name_hash;
 	struct hashmap dir_hash;
 	struct object_id oid;
@@ -349,8 +365,6 @@ int test_lazy_init_name_hash(struct index_state *istate, int try_threaded);
 void add_name_hash(struct index_state *istate, struct cache_entry *ce);
 void remove_name_hash(struct index_state *istate, struct cache_entry *ce);
 void free_name_hash(struct index_state *istate);
-
-void ensure_full_index(struct index_state *istate);
 
 /* Cache entry creation and cleanup */
 
@@ -569,7 +583,7 @@ extern char *git_work_tree_cfg;
 int is_inside_work_tree(void);
 const char *get_git_dir(void);
 const char *get_git_common_dir(void);
-char *get_object_directory(void);
+const char *get_object_directory(void);
 char *get_index_file(void);
 char *get_graft_file(struct repository *r);
 void set_git_dir(const char *path, int make_realpath);
@@ -891,6 +905,7 @@ void *read_blob_data_from_index(struct index_state *, const char *, unsigned lon
 #define CE_MATCH_IGNORE_FSMONITOR 0X20
 int is_racy_timestamp(const struct index_state *istate,
 		      const struct cache_entry *ce);
+int has_racy_timestamp(struct index_state *istate);
 int ie_match_stat(struct index_state *, const struct cache_entry *, struct stat *, unsigned int);
 int ie_modified(struct index_state *, const struct cache_entry *, struct stat *, unsigned int);
 
@@ -995,16 +1010,70 @@ void reset_shared_repository(void);
 extern int read_replace_refs;
 extern char *git_replace_ref_base;
 
+/*
+ * These values are used to help identify parts of a repository to fsync.
+ * FSYNC_COMPONENT_NONE identifies data that will not be a persistent part of the
+ * repository and so shouldn't be fsynced.
+ */
+enum fsync_component {
+	FSYNC_COMPONENT_NONE,
+	FSYNC_COMPONENT_LOOSE_OBJECT		= 1 << 0,
+	FSYNC_COMPONENT_PACK			= 1 << 1,
+	FSYNC_COMPONENT_PACK_METADATA		= 1 << 2,
+	FSYNC_COMPONENT_COMMIT_GRAPH		= 1 << 3,
+	FSYNC_COMPONENT_INDEX			= 1 << 4,
+	FSYNC_COMPONENT_REFERENCE		= 1 << 5,
+};
+
+#define FSYNC_COMPONENTS_OBJECTS (FSYNC_COMPONENT_LOOSE_OBJECT | \
+				  FSYNC_COMPONENT_PACK)
+
+#define FSYNC_COMPONENTS_DERIVED_METADATA (FSYNC_COMPONENT_PACK_METADATA | \
+					   FSYNC_COMPONENT_COMMIT_GRAPH)
+
+#define FSYNC_COMPONENTS_DEFAULT ((FSYNC_COMPONENTS_OBJECTS | \
+				   FSYNC_COMPONENTS_DERIVED_METADATA) & \
+				  ~FSYNC_COMPONENT_LOOSE_OBJECT)
+
+#define FSYNC_COMPONENTS_COMMITTED (FSYNC_COMPONENTS_OBJECTS | \
+				    FSYNC_COMPONENT_REFERENCE)
+
+#define FSYNC_COMPONENTS_ADDED (FSYNC_COMPONENTS_COMMITTED | \
+				FSYNC_COMPONENT_INDEX)
+
+#define FSYNC_COMPONENTS_ALL (FSYNC_COMPONENT_LOOSE_OBJECT | \
+			      FSYNC_COMPONENT_PACK | \
+			      FSYNC_COMPONENT_PACK_METADATA | \
+			      FSYNC_COMPONENT_COMMIT_GRAPH | \
+			      FSYNC_COMPONENT_INDEX | \
+			      FSYNC_COMPONENT_REFERENCE)
+
+#ifndef FSYNC_COMPONENTS_PLATFORM_DEFAULT
+#define FSYNC_COMPONENTS_PLATFORM_DEFAULT FSYNC_COMPONENTS_DEFAULT
+#endif
+
+/*
+ * A bitmask indicating which components of the repo should be fsynced.
+ */
+extern enum fsync_component fsync_components;
 extern int fsync_object_files;
 extern int use_fsync;
+
+enum fsync_method {
+	FSYNC_METHOD_FSYNC,
+	FSYNC_METHOD_WRITEOUT_ONLY,
+	FSYNC_METHOD_BATCH,
+};
+
+extern enum fsync_method fsync_method;
 extern int core_preload_index;
 extern int precomposed_unicode;
 extern int protect_hfs;
 extern int protect_ntfs;
-extern const char *core_fsmonitor;
 
 extern int core_apply_sparse_checkout;
 extern int core_sparse_checkout_cone;
+extern int sparse_expect_files_outside_of_patterns;
 
 /*
  * Returns the boolean value of $GIT_OPTIONAL_LOCKS (or the default value).
@@ -1321,9 +1390,23 @@ enum unpack_loose_header_result unpack_loose_header(git_zstream *stream,
 struct object_info;
 int parse_loose_header(const char *hdr, struct object_info *oi);
 
+/**
+ * With in-core object data in "buf", rehash it to make sure the
+ * object name actually matches "oid" to detect object corruption.
+ *
+ * A negative value indicates an error, usually that the OID is not
+ * what we expected, but it might also indicate another error.
+ */
 int check_object_signature(struct repository *r, const struct object_id *oid,
-			   void *buf, unsigned long size, const char *type,
-			   struct object_id *real_oidp);
+			   void *map, unsigned long size,
+			   enum object_type type);
+
+/**
+ * A streaming version of check_object_signature().
+ * Try reading the object named with "oid" using
+ * the streaming interface and rehash it to do the same.
+ */
+int stream_object_signature(struct repository *r, const struct object_id *oid);
 
 int finalize_object_file(const char *tmpfile, const char *filename);
 
@@ -1377,6 +1460,7 @@ struct object_context {
 #define GET_OID_FOLLOW_SYMLINKS 0100
 #define GET_OID_RECORD_PATH     0200
 #define GET_OID_ONLY_TO_DIE    04000
+#define GET_OID_REQUIRE_PATH  010000
 
 #define GET_OID_DISAMBIGUATORS \
 	(GET_OID_COMMIT | GET_OID_COMMITTISH | \
@@ -1549,7 +1633,7 @@ int cache_name_stage_compare(const char *name1, int len1, int stage1, const char
 
 void *read_object_with_reference(struct repository *r,
 				 const struct object_id *oid,
-				 const char *required_type,
+				 enum object_type required_type,
 				 unsigned long *size,
 				 struct object_id *oid_ret);
 
@@ -1558,48 +1642,6 @@ struct object *repo_peel_to_type(struct repository *r,
 				 struct object *o, enum object_type);
 #define peel_to_type(name, namelen, obj, type) \
 	repo_peel_to_type(the_repository, name, namelen, obj, type)
-
-enum date_mode_type {
-	DATE_NORMAL = 0,
-	DATE_HUMAN,
-	DATE_RELATIVE,
-	DATE_SHORT,
-	DATE_ISO8601,
-	DATE_ISO8601_STRICT,
-	DATE_RFC2822,
-	DATE_STRFTIME,
-	DATE_RAW,
-	DATE_UNIX
-};
-
-struct date_mode {
-	enum date_mode_type type;
-	const char *strftime_fmt;
-	int local;
-};
-
-/*
- * Convenience helper for passing a constant type, like:
- *
- *   show_date(t, tz, DATE_MODE(NORMAL));
- */
-#define DATE_MODE(t) date_mode_from_type(DATE_##t)
-struct date_mode *date_mode_from_type(enum date_mode_type type);
-
-const char *show_date(timestamp_t time, int timezone, const struct date_mode *mode);
-void show_date_relative(timestamp_t time, struct strbuf *timebuf);
-void show_date_human(timestamp_t time, int tz, const struct timeval *now,
-			struct strbuf *timebuf);
-int parse_date(const char *date, struct strbuf *out);
-int parse_date_basic(const char *date, timestamp_t *timestamp, int *offset);
-int parse_expiry_date(const char *date, timestamp_t *timestamp);
-void datestamp(struct strbuf *out);
-#define approxidate(s) approxidate_careful((s), NULL)
-timestamp_t approxidate_careful(const char *, int *);
-timestamp_t approxidate_relative(const char *date);
-void parse_date_format(const char *format, struct date_mode *mode);
-int date_overflows(timestamp_t date);
-time_t tm_to_time_t(const struct tm *tm);
 
 #define IDENT_STRICT	       1
 #define IDENT_NO_DATE	       2
@@ -1645,14 +1687,6 @@ struct ident_split {
  * if the input lacks timestamp and zone
  */
 int split_ident_line(struct ident_split *, const char *, int);
-
-/*
- * Like show_date, but pull the timestamp and tz parameters from
- * the ident_split. It will also sanity-check the values and produce
- * a well-known sentinel date if they appear bogus.
- */
-const char *show_ident_date(const struct ident_split *id,
-			    const struct date_mode *mode);
 
 /*
  * Compare split idents for equality or strict ordering. Note that we
@@ -1751,6 +1785,13 @@ int copy_file_with_time(const char *dst, const char *src, int mode);
 
 void write_or_die(int fd, const void *buf, size_t count);
 void fsync_or_die(int fd, const char *);
+int fsync_component(enum fsync_component component, int fd);
+void fsync_component_or_die(enum fsync_component component, int fd, const char *msg);
+
+static inline int batch_fsync_enabled(enum fsync_component component)
+{
+	return (fsync_components & component) && (fsync_method == FSYNC_METHOD_BATCH);
+}
 
 ssize_t read_in_full(int fd, void *buf, size_t count);
 ssize_t write_in_full(int fd, const void *buf, size_t count);
@@ -1846,8 +1887,10 @@ void overlay_tree_on_index(struct index_state *istate,
 struct startup_info {
 	int have_repository;
 	const char *prefix;
+	const char *original_cwd;
 };
 extern struct startup_info *startup_info;
+extern const char *tmp_original_cwd;
 
 /* merge.c */
 struct commit_list;

@@ -13,7 +13,7 @@ struct repository;
 struct string_list;
 struct strbuf;
 
-enum {
+enum submodule_recurse_mode {
 	RECURSE_SUBMODULES_ONLY = -5,
 	RECURSE_SUBMODULES_CHECK = -4,
 	RECURSE_SUBMODULES_ERROR = -3,
@@ -54,6 +54,9 @@ int git_default_submodule_config(const char *var, const char *value, void *cb);
 struct option;
 int option_parse_recurse_submodules_worktree_updater(const struct option *opt,
 						     const char *arg, int unset);
+int is_tree_submodule_active(struct repository *repo,
+			     const struct object_id *treeish_name,
+			     const char *path);
 int is_submodule_active(struct repository *repo, const char *path);
 /*
  * Determine if a submodule has been populated at a given 'path' by checking if
@@ -85,12 +88,12 @@ int should_update_submodules(void);
  */
 const struct submodule *submodule_from_ce(const struct cache_entry *ce);
 void check_for_new_submodule_commits(struct object_id *oid);
-int fetch_populated_submodules(struct repository *r,
-			       const struct strvec *options,
-			       const char *prefix,
-			       int command_line_option,
-			       int default_option,
-			       int quiet, int max_parallel_jobs);
+int fetch_submodules(struct repository *r,
+		     const struct strvec *options,
+		     const char *prefix,
+		     int command_line_option,
+		     int default_option,
+		     int quiet, int max_parallel_jobs);
 unsigned is_submodule_modified(const char *path, int ignore_untracked);
 int submodule_uses_gitfile(const char *path);
 
@@ -100,12 +103,11 @@ int submodule_uses_gitfile(const char *path);
 int bad_to_remove_submodule(const char *path, unsigned flags);
 
 /*
- * Call add_submodule_odb() to add the submodule at the given path to a list.
- * When register_all_submodule_odb_as_alternates() is called, the object stores
- * of all submodules in that list will be added as alternates in
- * the_repository.
+ * Call add_submodule_odb_by_path() to add the submodule at the given
+ * path to a list. When register_all_submodule_odb_as_alternates() is
+ * called, the object stores of all submodules in that list will be
+ * added as alternates in the_repository.
  */
-int add_submodule_odb(const char *path);
 void add_submodule_odb_by_path(const char *path);
 int register_all_submodule_odb_as_alternates(void);
 
@@ -156,11 +158,11 @@ int submodule_move_head(const char *path,
 void submodule_unset_core_worktree(const struct submodule *sub);
 
 /*
- * Prepare the "env_array" parameter of a "struct child_process" for executing
+ * Prepare the "env" parameter of a "struct child_process" for executing
  * a submodule by clearing any repo-specific environment variables, but
  * retaining any config in the environment.
  */
-void prepare_submodule_repo_env(struct strvec *out);
+void prepare_submodule_repo_env(struct strvec *env);
 
 #define ABSORB_GITDIR_RECURSE_SUBMODULES (1<<0)
 void absorb_git_dir_into_superproject(const char *path,

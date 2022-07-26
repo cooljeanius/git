@@ -13,6 +13,7 @@
 #include "packfile.h"
 #include "object-store.h"
 #include "protocol.h"
+#include "date.h"
 
 static const char content_type[] = "Content-Type";
 static const char content_length[] = "Content-Length";
@@ -475,9 +476,9 @@ static void run_service(const char **argv, int buffer_input)
 		host = "(none)";
 
 	if (!getenv("GIT_COMMITTER_NAME"))
-		strvec_pushf(&cld.env_array, "GIT_COMMITTER_NAME=%s", user);
+		strvec_pushf(&cld.env, "GIT_COMMITTER_NAME=%s", user);
 	if (!getenv("GIT_COMMITTER_EMAIL"))
-		strvec_pushf(&cld.env_array,
+		strvec_pushf(&cld.env,
 			     "GIT_COMMITTER_EMAIL=%s@http.%s", user, host);
 
 	strvec_pushv(&cld.args, argv);
@@ -659,8 +660,9 @@ static NORETURN void die_webcgi(const char *err, va_list params)
 {
 	if (dead <= 1) {
 		struct strbuf hdr = STRBUF_INIT;
+		report_fn die_message_fn = get_die_message_routine();
 
-		vreportf("fatal: ", err, params);
+		die_message_fn(err, params);
 
 		http_status(&hdr, 500, "Internal Server Error");
 		hdr_nocache(&hdr);

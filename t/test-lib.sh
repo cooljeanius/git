@@ -19,13 +19,20 @@
 # t/ subdirectory and are run in 'trash directory' subdirectory.
 if test -z "$TEST_DIRECTORY"
 then
-	# We allow tests to override this, in case they want to run tests
-	# outside of t/, e.g. for running tests on the test library
-	# itself.
-	TEST_DIRECTORY=$(pwd)
-else
 	# ensure that TEST_DIRECTORY is an absolute path so that it
 	# is valid even if the current working directory is changed
+	TEST_DIRECTORY=$(pwd)
+else
+	# The TEST_DIRECTORY will always be the path to the "t"
+	# directory in the git.git checkout. This is overridden by
+	# e.g. t/lib-subtest.sh, but only because its $(pwd) is
+	# different. Those tests still set "$TEST_DIRECTORY" to the
+	# same path.
+	#
+	# See use of "$GIT_BUILD_DIR" and "$TEST_DIRECTORY" below for
+	# hard assumptions about "$GIT_BUILD_DIR/t" existing and being
+	# the "$TEST_DIRECTORY", and e.g. "$TEST_DIRECTORY/helper"
+	# needing to exist.
 	TEST_DIRECTORY=$(cd "$TEST_DIRECTORY" && pwd) || exit 1
 fi
 if test -z "$TEST_OUTPUT_DIRECTORY"
@@ -34,19 +41,42 @@ then
 	# elsewhere
 	TEST_OUTPUT_DIRECTORY=$TEST_DIRECTORY
 fi
-GIT_BUILD_DIR="$TEST_DIRECTORY"/..
+GIT_BUILD_DIR="${TEST_DIRECTORY%/t}"
+if test "$TEST_DIRECTORY" = "$GIT_BUILD_DIR"
+then
+	echo "PANIC: Running in a $TEST_DIRECTORY that doesn't end in '/t'?" >&2
+	exit 1
+fi
+
+# Prepend a string to a VAR using an arbitrary ":" delimiter, not
+# adding the delimiter if VAR or VALUE is empty. I.e. a generalized:
+#
+#	VAR=$1${VAR:+${1:+$2}$VAR}
+#
+# Usage (using ":" as the $2 delimiter):
+#
+#	prepend_var VAR : VALUE
+prepend_var () {
+	eval "$1=\"$3\${$1:+${3:+$2}\$$1}\""
+}
+
+# If [AL]SAN is in effect we want to abort so that we notice
+# problems. The GIT_SAN_OPTIONS variable can be used to set common
+# defaults shared between [AL]SAN_OPTIONS.
+prepend_var GIT_SAN_OPTIONS : abort_on_error=1
+prepend_var GIT_SAN_OPTIONS : strip_path_prefix="$GIT_BUILD_DIR/"
 
 # If we were built with ASAN, it may complain about leaks
 # of program-lifetime variables. Disable it by default to lower
 # the noise level. This needs to happen at the start of the script,
 # before we even do our "did we build git yet" check (since we don't
 # want that one to complain to stderr).
-: ${ASAN_OPTIONS=detect_leaks=0:abort_on_error=1}
+prepend_var ASAN_OPTIONS : $GIT_SAN_OPTIONS
+prepend_var ASAN_OPTIONS : detect_leaks=0
 export ASAN_OPTIONS
 
-# If LSAN is in effect we _do_ want leak checking, but we still
-# want to abort so that we notice the problems.
-: ${LSAN_OPTIONS=abort_on_error=1}
+prepend_var LSAN_OPTIONS : $GIT_SAN_OPTIONS
+prepend_var LSAN_OPTIONS : fast_unwind_on_malloc=0
 export LSAN_OPTIONS
 
 if test ! -f "$GIT_BUILD_DIR"/GIT-BUILD-OPTIONS
@@ -107,6 +137,12 @@ mark_option_requires_arg () {
 	store_arg_to=$2
 }
 
+# These functions can be overridden e.g. to output JUnit XML
+start_test_output () { :; }
+start_test_case_output () { :; }
+finalize_test_case_output () { :; }
+finalize_test_output () { :; }
+
 parse_option () {
 	local opt="$1"
 
@@ -166,7 +202,10 @@ parse_option () {
 		tee=t
 		;;
 	--write-junit-xml)
-		write_junit_xml=t
+		. "$TEST_DIRECTORY/test-lib-junit.sh"
+		;;
+	--github-workflow-markup)
+		. "$TEST_DIRECTORY/test-lib-github-workflow-markup.sh"
 		;;
 	--stress)
 		stress=t ;;
@@ -449,6 +488,8 @@ unset VISUAL EMAIL LANGUAGE $("$PERL_PATH" -e '
 unset XDG_CACHE_HOME
 unset XDG_CONFIG_HOME
 unset GITPERLLIB
+unset GIT_TRACE2_PARENT_NAME
+unset GIT_TRACE2_PARENT_SID
 TEST_AUTHOR_LOCALNAME=author
 TEST_AUTHOR_DOMAIN=example.com
 GIT_AUTHOR_EMAIL=${TEST_AUTHOR_LOCALNAME}@${TEST_AUTHOR_DOMAIN}
@@ -503,9 +544,10 @@ case $GIT_TEST_FSYNC in
 	;;
 esac
 
-# Add libc MALLOC and MALLOC_PERTURB test
-# only if we are not executing the test with valgrind
+# Add libc MALLOC and MALLOC_PERTURB test only if we are not executing
+# the test with valgrind and have not compiled with SANITIZE=address.
 if test -n "$valgrind" ||
+   test -n "$SANITIZE_ADDRESS" ||
    test -n "$TEST_NO_MALLOC_CHECK"
 then
 	setup_malloc_check () {
@@ -516,11 +558,29 @@ then
 	}
 else
 	setup_malloc_check () {
+		local g
+		local t
 		MALLOC_CHECK_=3	MALLOC_PERTURB_=165
 		export MALLOC_CHECK_ MALLOC_PERTURB_
+		if _GLIBC_VERSION=$(getconf GNU_LIBC_VERSION 2>/dev/null) &&
+		   _GLIBC_VERSION=${_GLIBC_VERSION#"glibc "} &&
+		   expr 2.34 \<= "$_GLIBC_VERSION" >/dev/null
+		then
+			g=
+			LD_PRELOAD="libc_malloc_debug.so.0"
+			for t in \
+				glibc.malloc.check=1 \
+				glibc.malloc.perturb=165
+			do
+				g="${g#:}:$t"
+			done
+			GLIBC_TUNABLES=$g
+			export LD_PRELOAD GLIBC_TUNABLES
+		fi
 	}
 	teardown_malloc_check () {
 		unset MALLOC_CHECK_ MALLOC_PERTURB_
+		unset LD_PRELOAD GLIBC_TUNABLES
 	}
 fi
 
@@ -613,7 +673,7 @@ exec 6<&0
 exec 7>&2
 
 _error_exit () {
-	finalize_junit_xml
+	finalize_test_output
 	GIT_EXIT_OK=t
 	exit 1
 }
@@ -723,58 +783,35 @@ trap '{ code=$?; set +x; } 2>/dev/null; exit $code' INT TERM HUP
 # the test_expect_* functions instead.
 
 test_ok_ () {
-	if test -n "$write_junit_xml"
-	then
-		write_junit_xml_testcase "$*"
-	fi
 	test_success=$(($test_success + 1))
 	say_color "" "ok $test_count - $@"
+	finalize_test_case_output ok "$@"
 }
 
 test_failure_ () {
-	if test -n "$write_junit_xml"
-	then
-		junit_insert="<failure message=\"not ok $test_count -"
-		junit_insert="$junit_insert $(xml_attr_encode "$1")\">"
-		junit_insert="$junit_insert $(xml_attr_encode \
-			"$(if test -n "$GIT_TEST_TEE_OUTPUT_FILE"
-			   then
-				test-tool path-utils skip-n-bytes \
-					"$GIT_TEST_TEE_OUTPUT_FILE" $GIT_TEST_TEE_OFFSET
-			   else
-				printf '%s\n' "$@" | sed 1d
-			   fi)")"
-		junit_insert="$junit_insert</failure>"
-		if test -n "$GIT_TEST_TEE_OUTPUT_FILE"
-		then
-			junit_insert="$junit_insert<system-err>$(xml_attr_encode \
-				"$(cat "$GIT_TEST_TEE_OUTPUT_FILE")")</system-err>"
-		fi
-		write_junit_xml_testcase "$1" "      $junit_insert"
-	fi
+	failure_label=$1
 	test_failure=$(($test_failure + 1))
 	say_color error "not ok $test_count - $1"
 	shift
 	printf '%s\n' "$*" | sed -e 's/^/#	/'
-	test "$immediate" = "" || _error_exit
+	if test -n "$immediate"
+	then
+		say_color error "1..$test_count"
+		_error_exit
+	fi
+	finalize_test_case_output failure "$failure_label" "$@"
 }
 
 test_known_broken_ok_ () {
-	if test -n "$write_junit_xml"
-	then
-		write_junit_xml_testcase "$* (breakage fixed)"
-	fi
 	test_fixed=$(($test_fixed+1))
 	say_color error "ok $test_count - $@ # TODO known breakage vanished"
+	finalize_test_case_output fixed "$@"
 }
 
 test_known_broken_failure_ () {
-	if test -n "$write_junit_xml"
-	then
-		write_junit_xml_testcase "$* (known breakage)"
-	fi
 	test_broken=$(($test_broken+1))
 	say_color warn "not ok $test_count - $@ # TODO known breakage"
+	finalize_test_case_output broken "$@"
 }
 
 test_debug () {
@@ -1049,10 +1086,7 @@ test_start_ () {
 	test_count=$(($test_count+1))
 	maybe_setup_verbose
 	maybe_setup_valgrind
-	if test -n "$write_junit_xml"
-	then
-		junit_start=$(test-tool date getnanos)
-	fi
+	start_test_case_output "$@"
 }
 
 test_finish_ () {
@@ -1103,15 +1137,10 @@ test_skip () {
 
 	case "$to_skip" in
 	t)
-		if test -n "$write_junit_xml"
-		then
-			message="$(xml_attr_encode "$skipped_reason")"
-			write_junit_xml_testcase "$1" \
-				"      <skipped message=\"$message\" />"
-		fi
 
 		say_color skip "ok $test_count # skip $1 ($skipped_reason)"
 		: true
+		finalize_test_case_output skip "$@"
 		;;
 	*)
 		false
@@ -1122,53 +1151,6 @@ test_skip () {
 # stub; perf-lib overrides it
 test_at_end_hook_ () {
 	:
-}
-
-write_junit_xml () {
-	case "$1" in
-	--truncate)
-		>"$junit_xml_path"
-		junit_have_testcase=
-		shift
-		;;
-	esac
-	printf '%s\n' "$@" >>"$junit_xml_path"
-}
-
-xml_attr_encode () {
-	printf '%s\n' "$@" | test-tool xml-encode
-}
-
-write_junit_xml_testcase () {
-	junit_attrs="name=\"$(xml_attr_encode "$this_test.$test_count $1")\""
-	shift
-	junit_attrs="$junit_attrs classname=\"$this_test\""
-	junit_attrs="$junit_attrs time=\"$(test-tool \
-		date getnanos $junit_start)\""
-	write_junit_xml "$(printf '%s\n' \
-		"    <testcase $junit_attrs>" "$@" "    </testcase>")"
-	junit_have_testcase=t
-}
-
-finalize_junit_xml () {
-	if test -n "$write_junit_xml" && test -n "$junit_xml_path"
-	then
-		test -n "$junit_have_testcase" || {
-			junit_start=$(test-tool date getnanos)
-			write_junit_xml_testcase "all tests skipped"
-		}
-
-		# adjust the overall time
-		junit_time=$(test-tool date getnanos $junit_suite_start)
-		sed -e "s/\(<testsuite.*\) time=\"[^\"]*\"/\1/" \
-			-e "s/<testsuite [^>]*/& time=\"$junit_time\"/" \
-			-e '/^ *<\/testsuite/d' \
-			<"$junit_xml_path" >"$junit_xml_path.new"
-		mv "$junit_xml_path.new" "$junit_xml_path"
-
-		write_junit_xml "  </testsuite>" "</testsuites>"
-		write_junit_xml=
-	fi
 }
 
 test_atexit_cleanup=:
@@ -1193,7 +1175,7 @@ test_done () {
 	# removed, so the commands can access pidfiles and socket files.
 	test_atexit_handler
 
-	finalize_junit_xml
+	finalize_test_output
 
 	if test -z "$HARNESS_ACTIVE"
 	then
@@ -1474,7 +1456,9 @@ remove_trash_directory "$TRASH_DIRECTORY" || {
 remove_trash=t
 if test -z "$TEST_NO_CREATE_REPO"
 then
-	git init "$TRASH_DIRECTORY" >&3 2>&4 ||
+	git init \
+	    ${TEST_CREATE_REPO_NO_TEMPLATE:+--template=} \
+	    "$TRASH_DIRECTORY" >&3 2>&4 ||
 	error "cannot run git init"
 else
 	mkdir -p "$TRASH_DIRECTORY"
@@ -1484,22 +1468,7 @@ fi
 # in subprocesses like git equals our $PWD (for pathname comparisons).
 cd -P "$TRASH_DIRECTORY" || exit 1
 
-if test -n "$write_junit_xml"
-then
-	junit_xml_dir="$TEST_OUTPUT_DIRECTORY/out"
-	mkdir -p "$junit_xml_dir"
-	junit_xml_base=${0##*/}
-	junit_xml_path="$junit_xml_dir/TEST-${junit_xml_base%.sh}.xml"
-	junit_attrs="name=\"${junit_xml_base%.sh}\""
-	junit_attrs="$junit_attrs timestamp=\"$(TZ=UTC \
-		date +%Y-%m-%dT%H:%M:%S)\""
-	write_junit_xml --truncate "<testsuites>" "  <testsuite $junit_attrs>"
-	junit_suite_start=$(test-tool date getnanos)
-	if test -n "$GIT_TEST_TEE_OUTPUT_FILE"
-	then
-		GIT_TEST_TEE_OFFSET=0
-	fi
-fi
+start_test_output "$0"
 
 # Convenience
 # A regexp to match 5 and 35 hexdigits
@@ -1605,6 +1574,7 @@ esac
 test_set_prereq REFFILES
 
 ( COLUMNS=1 && test $COLUMNS = 1 ) && test_set_prereq COLUMNS_CAN_BE_1
+test -z "$NO_CURL" && test_set_prereq LIBCURL
 test -z "$NO_PERL" && test_set_prereq PERL
 test -z "$NO_PTHREADS" && test_set_prereq PTHREADS
 test -z "$NO_PYTHON" && test_set_prereq PYTHON
@@ -1612,6 +1582,7 @@ test -n "$USE_LIBPCRE2" && test_set_prereq PCRE
 test -n "$USE_LIBPCRE2" && test_set_prereq LIBPCRE2
 test -z "$NO_GETTEXT" && test_set_prereq GETTEXT
 test -n "$SANITIZE_LEAK" && test_set_prereq SANITIZE_LEAK
+test -n "$GIT_VALGRIND_ENABLED" && test_set_prereq VALGRIND
 
 if test -z "$GIT_TEST_CHECK_CACHE_TREE"
 then
@@ -1791,9 +1762,20 @@ test_lazy_prereq SHA1 '
 	esac
 '
 
+test_lazy_prereq ADD_I_USE_BUILTIN '
+	test_bool_env GIT_TEST_ADD_I_USE_BUILTIN true
+'
+
 # Ensure that no test accidentally triggers a Git command
 # that runs the actual maintenance scheduler, affecting a user's
 # system permanently.
 # Tests that verify the scheduler integration must set this locally
 # to avoid errors.
 GIT_TEST_MAINT_SCHEDULER="none:exit 1"
+
+# Does this platform support `git fsmonitor--daemon`
+#
+test_lazy_prereq FSMONITOR_DAEMON '
+	git version --build-options >output &&
+	grep "feature: fsmonitor--daemon" output
+'

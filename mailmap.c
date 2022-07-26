@@ -43,8 +43,8 @@ static void free_mailmap_info(void *p, const char *s)
 static void free_mailmap_entry(void *p, const char *s)
 {
 	struct mailmap_entry *me = (struct mailmap_entry *)p;
-	debug_mm("mailmap: removing entries for <%s>, with %d sub-entries\n",
-		 s, me->namemap.nr);
+	debug_mm("mailmap: removing entries for <%s>, with %"PRIuMAX" sub-entries\n",
+		 s, (uintmax_t)me->namemap.nr);
 	debug_mm("mailmap: - simple: '%s' <%s>\n",
 		 debug_str(me->name), debug_str(me->email));
 
@@ -77,7 +77,7 @@ static void add_mapping(struct string_list *map,
 	struct mailmap_entry *me;
 	struct string_list_item *item;
 
-	if (old_email == NULL) {
+	if (!old_email) {
 		old_email = new_email;
 		new_email = NULL;
 	}
@@ -92,7 +92,7 @@ static void add_mapping(struct string_list *map,
 		item->util = me;
 	}
 
-	if (old_name == NULL) {
+	if (!old_name) {
 		debug_mm("mailmap: adding (simple) entry for '%s'\n", old_email);
 
 		/* Replace current name and new email for simple entry */
@@ -123,9 +123,9 @@ static char *parse_name_and_email(char *buffer, char **name,
 	char *left, *right, *nstart, *nend;
 	*name = *email = NULL;
 
-	if ((left = strchr(buffer, '<')) == NULL)
+	if (!(left = strchr(buffer, '<')))
 		return NULL;
-	if ((right = strchr(left+1, '>')) == NULL)
+	if (!(right = strchr(left + 1, '>')))
 		return NULL;
 	if (!allow_empty_email && (left+1 == right))
 		return NULL;
@@ -153,7 +153,7 @@ static void read_mailmap_line(struct string_list *map, char *buffer)
 	if (buffer[0] == '#')
 		return;
 
-	if ((name2 = parse_name_and_email(buffer, &name1, &email1, 0)) != NULL)
+	if ((name2 = parse_name_and_email(buffer, &name1, &email1, 0)))
 		parse_name_and_email(name2, &name2, &email2, 1);
 
 	if (email1)
@@ -250,7 +250,8 @@ int read_mailmap(struct string_list *map)
 
 void clear_mailmap(struct string_list *map)
 {
-	debug_mm("mailmap: clearing %d entries...\n", map->nr);
+	debug_mm("mailmap: clearing %"PRIuMAX" entries...\n",
+		 (uintmax_t)map->nr);
 	map->strdup_strings = 1;
 	string_list_clear_func(map, free_mailmap_entry);
 	debug_mm("mailmap: cleared\n");
@@ -319,7 +320,7 @@ int map_user(struct string_list *map,
 		 (int)*emaillen, debug_str(*email));
 
 	item = lookup_prefix(map, *email, *emaillen);
-	if (item != NULL) {
+	if (item) {
 		me = (struct mailmap_entry *)item->util;
 		if (me->namemap.nr) {
 			/*
@@ -333,7 +334,7 @@ int map_user(struct string_list *map,
 				item = subitem;
 		}
 	}
-	if (item != NULL) {
+	if (item) {
 		struct mailmap_info *mi = (struct mailmap_info *)item->util;
 		if (mi->name == NULL && mi->email == NULL) {
 			debug_mm("map_user:  -- (no simple mapping)\n");

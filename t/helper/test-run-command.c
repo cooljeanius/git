@@ -19,7 +19,6 @@
 #include "thread-utils.h"
 #include "wildmatch.h"
 #include "gettext.h"
-#include "parse-options.h"
 
 static int number_callbacks;
 static int parallel_next(struct child_process *cp,
@@ -32,7 +31,11 @@ static int parallel_next(struct child_process *cp,
 		return 0;
 
 	strvec_pushv(&cp->args, d->args.v);
-	strbuf_addstr(err, "preloaded output of a child\n");
+	if (err)
+		strbuf_addstr(err, "preloaded output of a child\n");
+	else
+		fprintf(stderr, "preloaded output of a child\n");
+
 	number_callbacks++;
 	return 1;
 }
@@ -42,7 +45,10 @@ static int no_job(struct child_process *cp,
 		  void *cb,
 		  void **task_cb)
 {
-	strbuf_addstr(err, "no further jobs available\n");
+	if (err)
+		strbuf_addstr(err, "no further jobs available\n");
+	else
+		fprintf(stderr, "no further jobs available\n");
 	return 0;
 }
 
@@ -51,7 +57,10 @@ static int task_finished(int result,
 			 void *pp_cb,
 			 void *pp_task_cb)
 {
-	strbuf_addstr(err, "asking for a quick stop\n");
+	if (err)
+		strbuf_addstr(err, "asking for a quick stop\n");
+	else
+		fprintf(stderr, "asking for a quick stop\n");
 	return 1;
 }
 
@@ -180,15 +189,16 @@ static int testsuite(int argc, const char **argv)
 	if (max_jobs > suite.tests.nr)
 		max_jobs = suite.tests.nr;
 
-	fprintf(stderr, "Running %d tests (%d at a time)\n",
-		suite.tests.nr, max_jobs);
+	fprintf(stderr, "Running %"PRIuMAX" tests (%d at a time)\n",
+		(uintmax_t)suite.tests.nr, max_jobs);
 
 	ret = run_processes_parallel(max_jobs, next_test, test_failed,
 				     test_finished, &suite);
 
 	if (suite.failed.nr > 0) {
 		ret = 1;
-		fprintf(stderr, "%d tests failed:\n\n", suite.failed.nr);
+		fprintf(stderr, "%"PRIuMAX" tests failed:\n\n",
+			(uintmax_t)suite.failed.nr);
 		for (i = 0; i < suite.failed.nr; i++)
 			fprintf(stderr, "\t%s\n", suite.failed.items[i].string);
 	}
@@ -221,9 +231,9 @@ static int quote_stress_test(int argc, const char **argv)
 	struct strbuf out = STRBUF_INIT;
 	struct strvec args = STRVEC_INIT;
 	struct option options[] = {
-		OPT_INTEGER('n', "trials", &trials, "Number of trials"),
-		OPT_INTEGER('s', "skip", &skip, "Skip <n> trials"),
-		OPT_BOOL('m', "msys2", &msys2, "Test quoting for MSYS2's sh"),
+		OPT_INTEGER('n', "trials", &trials, "number of trials"),
+		OPT_INTEGER('s', "skip", &skip, "skip <n> trials"),
+		OPT_BOOL('m', "msys2", &msys2, "test quoting for MSYS2's sh"),
 		OPT_END()
 	};
 	const char * const usage[] = {
@@ -390,7 +400,7 @@ int cmd__run_command(int argc, const char **argv)
 	while (!strcmp(argv[1], "env")) {
 		if (!argv[2])
 			die("env specifier without a value");
-		strvec_push(&proc.env_array, argv[2]);
+		strvec_push(&proc.env, argv[2]);
 		argv += 2;
 		argc -= 2;
 	}
@@ -406,6 +416,12 @@ int cmd__run_command(int argc, const char **argv)
 	}
 	if (!strcmp(argv[1], "run-command"))
 		exit(run_command(&proc));
+
+	if (!strcmp(argv[1], "--ungroup")) {
+		argv += 1;
+		argc -= 1;
+		run_processes_parallel_ungroup = 1;
+	}
 
 	jobs = atoi(argv[2]);
 	strvec_clear(&proc.args);

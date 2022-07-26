@@ -120,7 +120,7 @@ static int populate_maildir_list(struct string_list *list, const char *path)
 	for (sub = subs; *sub; ++sub) {
 		free(name);
 		name = xstrfmt("%s/%s", path, *sub);
-		if ((dir = opendir(name)) == NULL) {
+		if (!(dir = opendir(name))) {
 			if (errno == ENOENT)
 				continue;
 			error_errno("cannot opendir %s", name);
@@ -222,6 +222,9 @@ static int split_mbox(const char *file, const char *dir, int allow_bare,
 
 	FILE *f = !strcmp(file, "-") ? stdin : fopen(file, "r");
 	int file_done = 0;
+
+	if (isatty(fileno(f)))
+		warning(_("reading patches from stdin/tty..."));
 
 	if (!f) {
 		error_errno("cannot open mbox %s", file);

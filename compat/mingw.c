@@ -1,5 +1,6 @@
 #include "../git-compat-util.h"
 #include "win32.h"
+#include <aclapi.h>
 #include <conio.h>
 #include <wchar.h>
 #include "../strbuf.h"
@@ -8,6 +9,8 @@
 #include "win32/lazyload.h"
 #include "../config.h"
 #include "dir.h"
+#define SECURITY_WIN32
+#include <sspi.h>
 
 #define HCAST(type, handle) ((type)(intptr_t)handle)
 
@@ -959,9 +962,11 @@ static inline void time_t_to_filetime(time_t t, FILETIME *ft)
 int mingw_utime (const char *file_name, const struct utimbuf *times)
 {
 	FILETIME mft, aft;
-	int fh, rc;
+	int rc;
 	DWORD attrs;
 	wchar_t wfilename[MAX_PATH];
+	HANDLE osfilehandle;
+
 	if (xutftowcs_path(wfilename, file_name) < 0)
 		return -1;
 
@@ -973,7 +978,17 @@ int mingw_utime (const char *file_name, const struct utimbuf *times)
 		SetFileAttributesW(wfilename, attrs & ~FILE_ATTRIBUTE_READONLY);
 	}
 
-	if ((fh = _wopen(wfilename, O_RDWR | O_BINARY)) < 0) {
+	osfilehandle = CreateFileW(wfilename,
+				   FILE_WRITE_ATTRIBUTES,
+				   0 /*FileShare.None*/,
+				   NULL,
+				   OPEN_EXISTING,
+				   (attrs != INVALID_FILE_ATTRIBUTES &&
+					(attrs & FILE_ATTRIBUTE_DIRECTORY)) ?
+					FILE_FLAG_BACKUP_SEMANTICS : 0,
+				   NULL);
+	if (osfilehandle == INVALID_HANDLE_VALUE) {
+		errno = err_win_to_posix(GetLastError());
 		rc = -1;
 		goto revert_attrs;
 	}
@@ -985,12 +1000,15 @@ int mingw_utime (const char *file_name, const struct utimbuf *times)
 		GetSystemTimeAsFileTime(&mft);
 		aft = mft;
 	}
-	if (!SetFileTime((HANDLE)_get_osfhandle(fh), NULL, &aft, &mft)) {
+
+	if (!SetFileTime(osfilehandle, NULL, &aft, &mft)) {
 		errno = EINVAL;
 		rc = -1;
 	} else
 		rc = 0;
-	close(fh);
+
+	if (osfilehandle != INVALID_HANDLE_VALUE)
+		CloseHandle(osfilehandle);
 
 revert_attrs:
 	if (attrs != INVALID_FILE_ATTRIBUTES &&
@@ -1008,7 +1026,7 @@ size_t mingw_strftime(char *s, size_t max,
 	/* a pointer to the original strftime in case we can't find the UCRT version */
 	static size_t (*fallback)(char *, size_t, const char *, const struct tm *) = strftime;
 	size_t ret;
-	DECLARE_PROC_ADDR(ucrtbase.dll, size_t, strftime, char *, size_t,
+	DECLARE_PROC_ADDR(ucrtbase.dll, size_t, __cdecl, strftime, char *, size_t,
 		const char *, const struct tm *);
 
 	if (INIT_PROC_ADDR(strftime))
@@ -1041,10 +1059,7 @@ char *mingw_mktemp(char *template)
 
 int mkstemp(char *template)
 {
-	char *filename = mktemp(template);
-	if (filename == NULL)
-		return -1;
-	return open(filename, O_RDWR | O_CREAT, 0600);
+	return git_mkstemp_mode(template, 0600);
 }
 
 int gettimeofday(struct timeval *tv, void *tz)
@@ -1125,6 +1140,10 @@ char *mingw_getcwd(char *pointer, int len)
 	}
 	if (!ret || ret >= ARRAY_SIZE(wpointer))
 		return NULL;
+	if (GetFileAttributesW(wpointer) == INVALID_FILE_ATTRIBUTES) {
+		errno = ENOENT;
+		return NULL;
+	}
 	if (xwcstoutf(pointer, wpointer, len) < 0)
 		return NULL;
 	convert_slashes(pointer);
@@ -2185,7 +2204,7 @@ enum EXTENDED_NAME_FORMAT {
 
 static char *get_extended_user_info(enum EXTENDED_NAME_FORMAT type)
 {
-	DECLARE_PROC_ADDR(secur32.dll, BOOL, GetUserNameExW,
+	DECLARE_PROC_ADDR(secur32.dll, BOOL, SEC_ENTRY, GetUserNameExW,
 		enum EXTENDED_NAME_FORMAT, LPCWSTR, PULONG);
 	static wchar_t wbuffer[1024];
 	DWORD len;
@@ -2310,7 +2329,7 @@ int setitimer(int type, struct itimerval *in, struct itimerval *out)
 	static const struct timeval zero;
 	static int atexit_done;
 
-	if (out != NULL)
+	if (out)
 		return errno = EINVAL,
 			error("setitimer param 3 != NULL not implemented");
 	if (!is_timeval_eq(&in->it_interval, &zero) &&
@@ -2339,7 +2358,7 @@ int sigaction(int sig, struct sigaction *in, struct sigaction *out)
 	if (sig != SIGALRM)
 		return errno = EINVAL,
 			error("sigaction only implemented for SIGALRM");
-	if (out != NULL)
+	if (out)
 		return errno = EINVAL,
 			error("sigaction: param 3 != NULL not implemented");
 
@@ -2624,6 +2643,92 @@ static void setup_windows_environment(void)
 	}
 }
 
+static PSID get_current_user_sid(void)
+{
+	HANDLE token;
+	DWORD len = 0;
+	PSID result = NULL;
+
+	if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		return NULL;
+
+	if (!GetTokenInformation(token, TokenUser, NULL, 0, &len)) {
+		TOKEN_USER *info = xmalloc((size_t)len);
+		if (GetTokenInformation(token, TokenUser, info, len, &len)) {
+			len = GetLengthSid(info->User.Sid);
+			result = xmalloc(len);
+			if (!CopySid(len, result, info->User.Sid)) {
+				error(_("failed to copy SID (%ld)"),
+				      GetLastError());
+				FREE_AND_NULL(result);
+			}
+		}
+		FREE_AND_NULL(info);
+	}
+	CloseHandle(token);
+
+	return result;
+}
+
+int is_path_owned_by_current_sid(const char *path)
+{
+	WCHAR wpath[MAX_PATH];
+	PSID sid = NULL;
+	PSECURITY_DESCRIPTOR descriptor = NULL;
+	DWORD err;
+
+	static wchar_t home[MAX_PATH];
+
+	int result = 0;
+
+	if (xutftowcs_path(wpath, path) < 0)
+		return 0;
+
+	/*
+	 * On Windows, the home directory is owned by the administrator, but for
+	 * all practical purposes, it belongs to the user. Do pretend that it is
+	 * owned by the user.
+	 */
+	if (!*home) {
+		DWORD size = ARRAY_SIZE(home);
+		DWORD len = GetEnvironmentVariableW(L"HOME", home, size);
+		if (!len || len > size)
+			wcscpy(home, L"::N/A::");
+	}
+	if (!wcsicmp(wpath, home))
+		return 1;
+
+	/* Get the owner SID */
+	err = GetNamedSecurityInfoW(wpath, SE_FILE_OBJECT,
+				    OWNER_SECURITY_INFORMATION |
+				    DACL_SECURITY_INFORMATION,
+				    &sid, NULL, NULL, NULL, &descriptor);
+
+	if (err != ERROR_SUCCESS)
+		error(_("failed to get owner for '%s' (%ld)"), path, err);
+	else if (sid && IsValidSid(sid)) {
+		/* Now, verify that the SID matches the current user's */
+		static PSID current_user_sid;
+
+		if (!current_user_sid)
+			current_user_sid = get_current_user_sid();
+
+		if (current_user_sid &&
+		    IsValidSid(current_user_sid) &&
+		    EqualSid(sid, current_user_sid))
+			result = 1;
+	}
+
+	/*
+	 * We can release the security descriptor struct only now because `sid`
+	 * actually points into this struct.
+	 */
+	if (descriptor)
+		LocalFree(descriptor);
+
+	return result;
+}
+
 int is_valid_win32_path(const char *path, int allow_literal_nul)
 {
 	const char *p = path;
@@ -2722,7 +2827,7 @@ not_a_reserved_name:
 			}
 
 			c = path[i];
-			if (c && c != '.' && c != ':' && c != '/' && c != '\\')
+			if (c && c != '.' && c != ':' && !is_xplatform_dir_sep(c))
 				goto not_a_reserved_name;
 
 			/* contains reserved name */

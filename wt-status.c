@@ -616,7 +616,7 @@ static void wt_status_collect_changes_worktree(struct wt_status *s)
 	rev.diffopt.rename_score = s->rename_score >= 0 ? s->rename_score : rev.diffopt.rename_score;
 	copy_pathspec(&rev.prune_data, &s->pathspec);
 	run_diff_files(&rev, 0);
-	clear_pathspec(&rev.prune_data);
+	release_revisions(&rev);
 }
 
 static void wt_status_collect_changes_index(struct wt_status *s)
@@ -651,10 +651,18 @@ static void wt_status_collect_changes_index(struct wt_status *s)
 	rev.diffopt.detect_rename = s->detect_rename >= 0 ? s->detect_rename : rev.diffopt.detect_rename;
 	rev.diffopt.rename_limit = s->rename_limit >= 0 ? s->rename_limit : rev.diffopt.rename_limit;
 	rev.diffopt.rename_score = s->rename_score >= 0 ? s->rename_score : rev.diffopt.rename_score;
+
+	/*
+	 * The `recursive` option must be enabled to allow the diff to recurse
+	 * into subdirectories of sparse directory index entries. If it is not
+	 * enabled, a subdirectory containing file(s) with changes is reported
+	 * as "modified", rather than the modified files themselves.
+	 */
+	rev.diffopt.flags.recursive = 1;
+
 	copy_pathspec(&rev.prune_data, &s->pathspec);
 	run_diff_index(&rev, 1);
-	object_array_clear(&rev.pending);
-	clear_pathspec(&rev.prune_data);
+	release_revisions(&rev);
 }
 
 static int add_file_to_list(const struct object_id *oid,
@@ -973,7 +981,7 @@ static void wt_longstatus_print_submodule_summary(struct wt_status *s, int uncom
 	struct strbuf summary = STRBUF_INIT;
 	char *summary_content;
 
-	strvec_pushf(&sm_summary.env_array, "GIT_INDEX_FILE=%s", s->index_file);
+	strvec_pushf(&sm_summary.env, "GIT_INDEX_FILE=%s", s->index_file);
 
 	strvec_push(&sm_summary.args, "submodule");
 	strvec_push(&sm_summary.args, "summary");
@@ -1143,6 +1151,7 @@ static void wt_longstatus_print_verbose(struct wt_status *s)
 		rev.diffopt.b_prefix = "w/";
 		run_diff_files(&rev, 0);
 	}
+	release_revisions(&rev);
 }
 
 static void wt_longstatus_print_tracking(struct wt_status *s)
@@ -1218,17 +1227,23 @@ static void show_merge_in_progress(struct wt_status *s,
 static void show_am_in_progress(struct wt_status *s,
 				const char *color)
 {
+	int am_empty_patch;
+
 	status_printf_ln(s, color,
 		_("You are in the middle of an am session."));
 	if (s->state.am_empty_patch)
 		status_printf_ln(s, color,
 			_("The current patch is empty."));
 	if (s->hints) {
-		if (!s->state.am_empty_patch)
+		am_empty_patch = s->state.am_empty_patch;
+		if (!am_empty_patch)
 			status_printf_ln(s, color,
 				_("  (fix conflicts and then run \"git am --continue\")"));
 		status_printf_ln(s, color,
 			_("  (use \"git am --skip\" to skip this patch)"));
+		if (am_empty_patch)
+			status_printf_ln(s, color,
+				_("  (use \"git am --allow-empty\" to record this patch as an empty commit)"));
 		status_printf_ln(s, color,
 			_("  (use \"git am --abort\" to restore the original branch)"));
 	}
@@ -1368,10 +1383,10 @@ static void show_rebase_information(struct wt_status *s,
 			status_printf_ln(s, color, _("No commands done."));
 		else {
 			status_printf_ln(s, color,
-				Q_("Last command done (%d command done):",
-					"Last commands done (%d commands done):",
+				Q_("Last command done (%"PRIuMAX" command done):",
+					"Last commands done (%"PRIuMAX" commands done):",
 					have_done.nr),
-				have_done.nr);
+				(uintmax_t)have_done.nr);
 			for (i = (have_done.nr > nr_lines_to_show)
 				? have_done.nr - nr_lines_to_show : 0;
 				i < have_done.nr;
@@ -1387,10 +1402,10 @@ static void show_rebase_information(struct wt_status *s,
 					 _("No commands remaining."));
 		else {
 			status_printf_ln(s, color,
-				Q_("Next command to do (%d remaining command):",
-					"Next commands to do (%d remaining commands):",
+				Q_("Next command to do (%"PRIuMAX" remaining command):",
+					"Next commands to do (%"PRIuMAX" remaining commands):",
 					yet_to_do.nr),
-				yet_to_do.nr);
+				(uintmax_t)yet_to_do.nr);
 			for (i = 0; i < nr_lines_to_show && i < yet_to_do.nr; i++)
 				status_printf_ln(s, color, "   %s", yet_to_do.items[i].string);
 			if (s->hints)
@@ -2530,7 +2545,9 @@ int has_unstaged_changes(struct repository *r, int ignore_submodules)
 	rev_info.diffopt.flags.quick = 1;
 	diff_setup_done(&rev_info.diffopt);
 	result = run_diff_files(&rev_info, 0);
-	return diff_result_code(&rev_info.diffopt, result);
+	result = diff_result_code(&rev_info.diffopt, result);
+	release_revisions(&rev_info);
+	return result;
 }
 
 /**
@@ -2562,8 +2579,9 @@ int has_uncommitted_changes(struct repository *r,
 
 	diff_setup_done(&rev_info.diffopt);
 	result = run_diff_index(&rev_info, 1);
-	object_array_clear(&rev_info.pending);
-	return diff_result_code(&rev_info.diffopt, result);
+	result = diff_result_code(&rev_info.diffopt, result);
+	release_revisions(&rev_info);
+	return result;
 }
 
 /**

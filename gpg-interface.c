@@ -165,15 +165,17 @@ static struct {
 	{ 0, "TRUST_", GPG_STATUS_TRUST_LEVEL },
 };
 
-static struct {
+/* Keep the order same as enum signature_trust_level */
+static struct sigcheck_gpg_trust_level {
 	const char *key;
+	const char *display_key;
 	enum signature_trust_level value;
 } sigcheck_gpg_trust_level[] = {
-	{ "UNDEFINED", TRUST_UNDEFINED },
-	{ "NEVER", TRUST_NEVER },
-	{ "MARGINAL", TRUST_MARGINAL },
-	{ "FULLY", TRUST_FULLY },
-	{ "ULTIMATE", TRUST_ULTIMATE },
+	{ "UNDEFINED", "undefined", TRUST_UNDEFINED },
+	{ "NEVER", "never", TRUST_NEVER },
+	{ "MARGINAL", "marginal", TRUST_MARGINAL },
+	{ "FULLY", "fully", TRUST_FULLY },
+	{ "ULTIMATE", "ultimate", TRUST_ULTIMATE },
 };
 
 static void replace_cstring(char **field, const char *line, const char *next)
@@ -433,7 +435,6 @@ static int verify_ssh_signed_buffer(struct signature_check *sigc,
 	struct tempfile *buffer_file;
 	int ret = -1;
 	const char *line;
-	size_t trust_size;
 	char *principal;
 	struct strbuf ssh_principals_out = STRBUF_INIT;
 	struct strbuf ssh_principals_err = STRBUF_INIT;
@@ -502,15 +503,30 @@ static int verify_ssh_signed_buffer(struct signature_check *sigc,
 		ret = -1;
 	} else {
 		/* Check every principal we found (one per line) */
-		for (line = ssh_principals_out.buf; *line;
-		     line = strchrnul(line + 1, '\n')) {
-			while (*line == '\n')
-				line++;
-			if (!*line)
-				break;
+		const char *next;
+		for (line = ssh_principals_out.buf;
+		     *line;
+		     line = next) {
+			const char *end_of_text;
 
-			trust_size = strcspn(line, "\n");
-			principal = xmemdupz(line, trust_size);
+			next = end_of_text = strchrnul(line, '\n');
+
+			 /* Did we find a LF, and did we have CR before it? */
+			if (*end_of_text &&
+			    line < end_of_text &&
+			    end_of_text[-1] == '\r')
+				end_of_text--;
+
+			/* Unless we hit NUL, skip over the LF we found */
+			if (*next)
+				next++;
+
+			/* Not all lines are data.  Skip empty ones */
+			if (line == end_of_text)
+				continue;
+
+			/* We now know we have an non-empty line. Process it */
+			principal = xmemdupz(line, end_of_text - line);
 
 			child_process_init(&ssh_keygen);
 			strbuf_release(&ssh_keygen_out);
@@ -702,7 +718,7 @@ int git_gpg_config(const char *var, const char *value, void *cb)
 			return config_error_nonbool(var);
 		fmt = get_format_by_name(value);
 		if (!fmt)
-			return error("unsupported value for %s: %s",
+			return error(_("invalid value for '%s': '%s'"),
 				     var, value);
 		use_format = fmt;
 		return 0;
@@ -717,8 +733,8 @@ int git_gpg_config(const char *var, const char *value, void *cb)
 		free(trust);
 
 		if (ret)
-			return error("unsupported value for %s: %s", var,
-				     value);
+			return error(_("invalid value for '%s': '%s'"),
+				     var, value);
 		return 0;
 	}
 
@@ -891,6 +907,20 @@ const char *get_signing_key(void)
 	return git_committer_info(IDENT_STRICT | IDENT_NO_DATE);
 }
 
+const char *gpg_trust_level_to_str(enum signature_trust_level level)
+{
+	struct sigcheck_gpg_trust_level *trust;
+
+	if (level < 0 || level >= ARRAY_SIZE(sigcheck_gpg_trust_level))
+		BUG("invalid trust level requested %d", level);
+
+	trust = &sigcheck_gpg_trust_level[level];
+	if (trust->value != level)
+		BUG("sigcheck_gpg_trust_level[] unsorted");
+
+	return sigcheck_gpg_trust_level[level].display_key;
+}
+
 int sign_buffer(struct strbuf *buffer, struct strbuf *signature, const char *signing_key)
 {
 	return use_format->sign_buffer(buffer, signature, signing_key);
@@ -920,6 +950,7 @@ static int sign_buffer_gpg(struct strbuf *buffer, struct strbuf *signature,
 	struct child_process gpg = CHILD_PROCESS_INIT;
 	int ret;
 	size_t bottom;
+	const char *cp;
 	struct strbuf gpg_status = STRBUF_INIT;
 
 	strvec_pushl(&gpg.args,
@@ -939,7 +970,13 @@ static int sign_buffer_gpg(struct strbuf *buffer, struct strbuf *signature,
 			   signature, 1024, &gpg_status, 0);
 	sigchain_pop(SIGPIPE);
 
-	ret |= !strstr(gpg_status.buf, "\n[GNUPG:] SIG_CREATED ");
+	for (cp = gpg_status.buf;
+	     cp && (cp = strstr(cp, "[GNUPG:] SIG_CREATED "));
+	     cp++) {
+		if (cp == gpg_status.buf || cp[-1] == '\n')
+			break; /* found */
+	}
+	ret |= !cp;
 	strbuf_release(&gpg_status);
 	if (ret)
 		return error(_("gpg failed to sign the data"));
@@ -964,7 +1001,7 @@ static int sign_buffer_ssh(struct strbuf *buffer, struct strbuf *signature,
 
 	if (!signing_key || signing_key[0] == '\0')
 		return error(
-			_("user.signingkey needs to be set for ssh signing"));
+			_("user.signingKey needs to be set for ssh signing"));
 
 	if (is_literal_ssh_key(signing_key, &literal_key)) {
 		/* A literal ssh key */

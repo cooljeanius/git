@@ -405,8 +405,8 @@ every 'git commit-graph write', as if the `--changed-paths` option was
 passed in.
 
 GIT_TEST_FSMONITOR=$PWD/t7519/fsmonitor-all exercises the fsmonitor
-code path for utilizing a file system monitor to speed up detecting
-new or changed files.
+code paths for utilizing a (hook based) file system monitor to speed up
+detecting new or changed files.
 
 GIT_TEST_INDEX_VERSION=<n> exercises the index read/write code path
 for the index version specified.  Can be set to any valid version
@@ -419,7 +419,7 @@ the --sparse command-line argument.
 GIT_TEST_PRELOAD_INDEX=<boolean> exercises the preload-index code path
 by overriding the minimum number of cache entries required per thread.
 
-GIT_TEST_ADD_I_USE_BUILTIN=<boolean>, when true, enables the
+GIT_TEST_ADD_I_USE_BUILTIN=<boolean>, when false, disables the
 built-in version of git add -i. See 'add.interactive.useBuiltin' in
 git-config(1).
 
@@ -466,7 +466,7 @@ explicitly providing repositories when accessing submodule objects is
 complete or needs to be abandoned for whatever reason (in which case the
 migrated codepaths still retain their performance benefits).
 
-GIT_TEST_REQUIRE_PREREQ=<list> allows specifying a space speparated list of
+GIT_TEST_REQUIRE_PREREQ=<list> allows specifying a space separated list of
 prereqs that are required to succeed. If a prereq in this list is triggered by
 a test and then fails then the whole test run will abort. This can help to make
 sure the expected tests are executed and not silently skipped when their
@@ -546,6 +546,61 @@ This test harness library does the following things:
    use.  These functions are designed to make all scripts behave
    consistently when command line arguments --verbose (or -v),
    --debug (or -d), and --immediate (or -i) is given.
+
+Recommended style
+-----------------
+Here are some recommented styles when writing test case.
+
+ - Keep test title the same line with test helper function itself.
+
+   Take test_expect_success helper for example, write it like:
+
+  test_expect_success 'test title' '
+      ... test body ...
+  '
+
+   Instead of:
+
+  test_expect_success \
+      'test title' \
+      '... test body ...'
+
+
+ - End the line with a single quote.
+
+ - Indent the body of here-document, and use "<<-" instead of "<<"
+   to strip leading TABs used for indentation:
+
+  test_expect_success 'test something' '
+      cat >expect <<-\EOF &&
+      one
+      two
+      three
+      EOF
+      test_something > actual &&
+      test_cmp expect actual
+  '
+
+   Instead of:
+
+  test_expect_success 'test something' '
+      cat >expect <<\EOF &&
+  one
+  two
+  three
+  EOF
+      test_something > actual &&
+      test_cmp expect actual
+  '
+
+ - Quote or escape the EOF delimiter that begins a here-document if
+   there is no parameter and other expansion in it, to signal readers
+   that they can skim it more casually:
+
+  cmd <<-\EOF
+  literal here-document text without any expansion
+  EOF
+
 
 Do's & don'ts
 -------------

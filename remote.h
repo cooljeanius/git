@@ -248,6 +248,12 @@ int resolve_remote_symref(struct ref *ref, struct ref *list);
 struct ref *ref_remove_duplicates(struct ref *ref_map);
 
 /*
+ * Check whether a name matches any negative refspec in rs. Returns 1 if the
+ * name matches at least one negative refspec, and 0 otherwise.
+ */
+int omit_name_by_refspec(const char *name, struct refspec *rs);
+
+/*
  * Remove all entries in the input list which match any negative refspec in
  * the refspec list.
  */
@@ -408,5 +414,37 @@ int parseopt_push_cas_option(const struct option *, const char *arg, int unset);
 
 int is_empty_cas(const struct push_cas_option *);
 void apply_push_cas(struct push_cas_option *, struct remote *, struct ref *);
+
+/*
+ * The `url` argument is the URL that navigates to the submodule origin
+ * repo. When relative, this URL is relative to the superproject origin
+ * URL repo. The `up_path` argument, if specified, is the relative
+ * path that navigates from the submodule working tree to the superproject
+ * working tree. Returns the origin URL of the submodule.
+ *
+ * Return either an absolute URL or filesystem path (if the superproject
+ * origin URL is an absolute URL or filesystem path, respectively) or a
+ * relative file system path (if the superproject origin URL is a relative
+ * file system path).
+ *
+ * When the output is a relative file system path, the path is either
+ * relative to the submodule working tree, if up_path is specified, or to
+ * the superproject working tree otherwise.
+ *
+ * NEEDSWORK: This works incorrectly on the domain and protocol part.
+ * remote_url      url              outcome          expectation
+ * http://a.com/b  ../c             http://a.com/c   as is
+ * http://a.com/b/ ../c             http://a.com/c   same as previous line, but
+ *                                                   ignore trailing slash in url
+ * http://a.com/b  ../../c          http://c         error out
+ * http://a.com/b  ../../../c       http:/c          error out
+ * http://a.com/b  ../../../../c    http:c           error out
+ * http://a.com/b  ../../../../../c    .:c           error out
+ * http://a.com/b  http://d.org/e   http://d.org/e   as is
+ * NEEDSWORK: Given how chop_last_dir() works, this function is broken
+ * when a local part has a colon in its path component, too.
+ */
+char *relative_url(const char *remote_url, const char *url,
+		   const char *up_path);
 
 #endif

@@ -12,25 +12,24 @@ This test checks the following functionality:
 * --porcelain output format
 * hiderefs
 * reflogs
+* URL validation
 '
 
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_CREATE_REPO_NO_TEMPLATE=1
 . ./test-lib.sh
 
 D=$(pwd)
 
 mk_empty () {
 	repo_name="$1"
-	rm -fr "$repo_name" &&
-	mkdir "$repo_name" &&
-	(
-		cd "$repo_name" &&
-		git init &&
-		git config receive.denyCurrentBranch warn &&
-		mv .git/hooks .git/hooks-disabled
-	)
+	test_when_finished "rm -rf \"$repo_name\"" &&
+	test_path_is_missing "$repo_name" &&
+	git init --template= "$repo_name" &&
+	mkdir "$repo_name"/.git/hooks &&
+	git -C "$repo_name" config receive.denyCurrentBranch warn
 }
 
 mk_test () {
@@ -59,41 +58,29 @@ mk_test () {
 mk_test_with_hooks() {
 	repo_name=$1
 	mk_test "$@" &&
-	(
-		cd "$repo_name" &&
-		mkdir .git/hooks &&
-		cd .git/hooks &&
+	test_hook -C "$repo_name" pre-receive <<-'EOF' &&
+	cat - >>pre-receive.actual
+	EOF
 
-		cat >pre-receive <<-'EOF' &&
-		#!/bin/sh
-		cat - >>pre-receive.actual
-		EOF
+	test_hook -C "$repo_name" update <<-'EOF' &&
+	printf "%s %s %s\n" "$@" >>update.actual
+	EOF
 
-		cat >update <<-'EOF' &&
-		#!/bin/sh
-		printf "%s %s %s\n" "$@" >>update.actual
-		EOF
+	test_hook -C "$repo_name" post-receive <<-'EOF' &&
+	cat - >>post-receive.actual
+	EOF
 
-		cat >post-receive <<-'EOF' &&
-		#!/bin/sh
-		cat - >>post-receive.actual
-		EOF
-
-		cat >post-update <<-'EOF' &&
-		#!/bin/sh
-		for ref in "$@"
-		do
-			printf "%s\n" "$ref" >>post-update.actual
-		done
-		EOF
-
-		chmod +x pre-receive update post-receive post-update
-	)
+	test_hook -C "$repo_name" post-update <<-'EOF'
+	for ref in "$@"
+	do
+		printf "%s\n" "$ref" >>post-update.actual
+	done
+	EOF
 }
 
 mk_child() {
-	rm -rf "$2" &&
-	git clone "$1" "$2"
+	test_when_finished "rm -rf \"$2\"" &&
+	git clone --template= "$1" "$2"
 }
 
 check_push_result () {
@@ -197,36 +184,48 @@ grep_wrote () {
 	grep 'write_pack_file/wrote.*"value":"'$1'"' $2
 }
 
-test_expect_success 'push with negotiation' '
-	# Without negotiation
+test_expect_success 'push without negotiation' '
 	mk_empty testrepo &&
 	git push testrepo $the_first_commit:refs/remotes/origin/first_commit &&
 	test_commit -C testrepo unrelated_commit &&
 	git -C testrepo config receive.hideRefs refs/remotes/origin/first_commit &&
-	echo now pushing without negotiation &&
+	test_when_finished "rm event" &&
 	GIT_TRACE2_EVENT="$(pwd)/event" git -c protocol.version=2 push testrepo refs/heads/main:refs/remotes/origin/main &&
-	grep_wrote 5 event && # 2 commits, 2 trees, 1 blob
+	grep_wrote 5 event # 2 commits, 2 trees, 1 blob
+'
 
-	# Same commands, but with negotiation
-	rm event &&
+test_expect_success 'push with negotiation' '
 	mk_empty testrepo &&
 	git push testrepo $the_first_commit:refs/remotes/origin/first_commit &&
 	test_commit -C testrepo unrelated_commit &&
 	git -C testrepo config receive.hideRefs refs/remotes/origin/first_commit &&
+	test_when_finished "rm event" &&
 	GIT_TRACE2_EVENT="$(pwd)/event" git -c protocol.version=2 -c push.negotiate=1 push testrepo refs/heads/main:refs/remotes/origin/main &&
 	grep_wrote 2 event # 1 commit, 1 tree
 '
 
 test_expect_success 'push with negotiation proceeds anyway even if negotiation fails' '
-	rm event &&
 	mk_empty testrepo &&
 	git push testrepo $the_first_commit:refs/remotes/origin/first_commit &&
 	test_commit -C testrepo unrelated_commit &&
 	git -C testrepo config receive.hideRefs refs/remotes/origin/first_commit &&
+	test_when_finished "rm event" &&
 	GIT_TEST_PROTOCOL_VERSION=0 GIT_TRACE2_EVENT="$(pwd)/event" \
 		git -c push.negotiate=1 push testrepo refs/heads/main:refs/remotes/origin/main 2>err &&
 	grep_wrote 5 event && # 2 commits, 2 trees, 1 blob
 	test_i18ngrep "push negotiation failed" err
+'
+
+test_expect_success 'push with negotiation does not attempt to fetch submodules' '
+	mk_empty submodule_upstream &&
+	test_commit -C submodule_upstream submodule_commit &&
+	git submodule add ./submodule_upstream submodule &&
+	mk_empty testrepo &&
+	git push testrepo $the_first_commit:refs/remotes/origin/first_commit &&
+	test_commit -C testrepo unrelated_commit &&
+	git -C testrepo config receive.hideRefs refs/remotes/origin/first_commit &&
+	git -c submodule.recurse=true -c protocol.version=2 -c push.negotiate=1 push testrepo refs/heads/main:refs/remotes/origin/main 2>err &&
+	! grep "Fetching submodule" err
 '
 
 test_expect_success 'push without wildcard' '
@@ -602,6 +601,26 @@ test_expect_success 'branch.*.pushremote config order is irrelevant' '
 	check_push_result two_repo $the_commit heads/main
 '
 
+test_expect_success 'push rejects empty branch name entries' '
+	mk_test one_repo heads/main &&
+	test_config remote.one.url one_repo &&
+	test_config branch..remote one &&
+	test_config branch..merge refs/heads/ &&
+	test_config branch.main.remote one &&
+	test_config branch.main.merge refs/heads/main &&
+	test_must_fail git push 2>err &&
+	grep "bad config variable .branch\.\." err
+'
+
+test_expect_success 'push ignores "branch." config without subsection' '
+	mk_test one_repo heads/main &&
+	test_config remote.one.url one_repo &&
+	test_config branch.autoSetupMerge true &&
+	test_config branch.main.remote one &&
+	test_config branch.main.merge refs/heads/main &&
+	git push
+'
+
 test_expect_success 'push with dry-run' '
 
 	mk_test testrepo heads/main &&
@@ -656,7 +675,6 @@ test_expect_success 'push does not update local refs on failure' '
 
 	mk_test testrepo heads/main &&
 	mk_child testrepo child &&
-	mkdir testrepo/.git/hooks &&
 	echo "#!/no/frobnication/today" >testrepo/.git/hooks/pre-receive &&
 	chmod +x testrepo/.git/hooks/pre-receive &&
 	(
@@ -921,6 +939,7 @@ test_expect_success 'fetch with branches' '
 	mk_empty testrepo &&
 	git branch second $the_first_commit &&
 	git checkout second &&
+	mkdir testrepo/.git/branches &&
 	echo ".." > testrepo/.git/branches/branch1 &&
 	(
 		cd testrepo &&
@@ -934,6 +953,7 @@ test_expect_success 'fetch with branches' '
 
 test_expect_success 'fetch with branches containing #' '
 	mk_empty testrepo &&
+	mkdir testrepo/.git/branches &&
 	echo "..#second" > testrepo/.git/branches/branch2 &&
 	(
 		cd testrepo &&
@@ -948,7 +968,11 @@ test_expect_success 'fetch with branches containing #' '
 test_expect_success 'push with branches' '
 	mk_empty testrepo &&
 	git checkout second &&
+
+	test_when_finished "rm -rf .git/branches" &&
+	mkdir .git/branches &&
 	echo "testrepo" > .git/branches/branch1 &&
+
 	git push branch1 &&
 	(
 		cd testrepo &&
@@ -960,7 +984,11 @@ test_expect_success 'push with branches' '
 
 test_expect_success 'push with branches containing #' '
 	mk_empty testrepo &&
+
+	test_when_finished "rm -rf .git/branches" &&
+	mkdir .git/branches &&
 	echo "testrepo#branch3" > .git/branches/branch2 &&
+
 	git push branch2 &&
 	(
 		cd testrepo &&
@@ -1318,7 +1346,7 @@ done
 
 test_expect_success 'fetch follows tags by default' '
 	mk_test testrepo heads/main &&
-	rm -fr src dst &&
+	test_when_finished "rm -rf src" &&
 	git init src &&
 	(
 		cd src &&
@@ -1328,6 +1356,7 @@ test_expect_success 'fetch follows tags by default' '
 		sed -n "p; s|refs/heads/main$|refs/remotes/origin/main|p" tmp1 |
 		sort -k 3 >../expect
 	) &&
+	test_when_finished "rm -rf dst" &&
 	git init dst &&
 	(
 		cd dst &&
@@ -1353,8 +1382,9 @@ test_expect_success 'peeled advertisements are not considered ref tips' '
 
 test_expect_success 'pushing a specific ref applies remote.$name.push as refmap' '
 	mk_test testrepo heads/main &&
-	rm -fr src dst &&
+	test_when_finished "rm -rf src" &&
 	git init src &&
+	test_when_finished "rm -rf dst" &&
 	git init --bare dst &&
 	(
 		cd src &&
@@ -1377,8 +1407,9 @@ test_expect_success 'pushing a specific ref applies remote.$name.push as refmap'
 
 test_expect_success 'with no remote.$name.push, it is not used as refmap' '
 	mk_test testrepo heads/main &&
-	rm -fr src dst &&
+	test_when_finished "rm -rf src" &&
 	git init src &&
+	test_when_finished "rm -rf dst" &&
 	git init --bare dst &&
 	(
 		cd src &&
@@ -1399,8 +1430,9 @@ test_expect_success 'with no remote.$name.push, it is not used as refmap' '
 
 test_expect_success 'with no remote.$name.push, upstream mapping is used' '
 	mk_test testrepo heads/main &&
-	rm -fr src dst &&
+	test_when_finished "rm -rf src" &&
 	git init src &&
+	test_when_finished "rm -rf dst" &&
 	git init --bare dst &&
 	(
 		cd src &&
@@ -1428,8 +1460,9 @@ test_expect_success 'with no remote.$name.push, upstream mapping is used' '
 
 test_expect_success 'push does not follow tags by default' '
 	mk_test testrepo heads/main &&
-	rm -fr src dst &&
+	test_when_finished "rm -rf src" &&
 	git init src &&
+	test_when_finished "rm -rf dst" &&
 	git init --bare dst &&
 	(
 		cd src &&
@@ -1451,8 +1484,9 @@ test_expect_success 'push does not follow tags by default' '
 
 test_expect_success 'push --follow-tags only pushes relevant tags' '
 	mk_test testrepo heads/main &&
-	rm -fr src dst &&
+	test_when_finished "rm -rf src" &&
 	git init src &&
+	test_when_finished "rm -rf dst" &&
 	git init --bare dst &&
 	(
 		cd src &&
@@ -1490,9 +1524,9 @@ EOF
 '
 
 test_expect_success 'pushing a tag pushes the tagged object' '
-	rm -rf dst.git &&
 	blob=$(echo unreferenced | git hash-object -w --stdin) &&
 	git tag -m foo tag-of-blob $blob &&
+	test_when_finished "rm -rf dst.git" &&
 	git init --bare dst.git &&
 	git push dst.git tag-of-blob &&
 	# the receiving index-pack should have noticed
@@ -1503,7 +1537,7 @@ test_expect_success 'pushing a tag pushes the tagged object' '
 '
 
 test_expect_success 'push into bare respects core.logallrefupdates' '
-	rm -rf dst.git &&
+	test_when_finished "rm -rf dst.git" &&
 	git init --bare dst.git &&
 	git -C dst.git config core.logallrefupdates true &&
 
@@ -1521,7 +1555,7 @@ test_expect_success 'push into bare respects core.logallrefupdates' '
 '
 
 test_expect_success 'fetch into bare respects core.logallrefupdates' '
-	rm -rf dst.git &&
+	test_when_finished "rm -rf dst.git" &&
 	git init --bare dst.git &&
 	(
 		cd dst.git &&
@@ -1542,6 +1576,7 @@ test_expect_success 'fetch into bare respects core.logallrefupdates' '
 '
 
 test_expect_success 'receive.denyCurrentBranch = updateInstead' '
+	mk_empty testrepo &&
 	git push testrepo main &&
 	(
 		cd testrepo &&
@@ -1644,7 +1679,7 @@ test_expect_success 'receive.denyCurrentBranch = updateInstead' '
 	) &&
 
 	# (5) push into void
-	rm -fr void &&
+	test_when_finished "rm -rf void" &&
 	git init void &&
 	(
 		cd void &&
@@ -1666,26 +1701,23 @@ test_expect_success 'receive.denyCurrentBranch = updateInstead' '
 '
 
 test_expect_success 'updateInstead with push-to-checkout hook' '
-	rm -fr testrepo &&
+	test_when_finished "rm -rf testrepo" &&
 	git init testrepo &&
-	(
-		cd testrepo &&
-		git pull .. main &&
-		git reset --hard HEAD^^ &&
-		git tag initial &&
-		git config receive.denyCurrentBranch updateInstead &&
-		write_script .git/hooks/push-to-checkout <<-\EOF
-		echo >&2 updating from $(git rev-parse HEAD)
-		echo >&2 updating to "$1"
+	git -C testrepo pull .. main &&
+	git -C testrepo reset --hard HEAD^^ &&
+	git -C testrepo tag initial &&
+	git -C testrepo config receive.denyCurrentBranch updateInstead &&
+	test_hook -C testrepo push-to-checkout <<-\EOF &&
+	echo >&2 updating from $(git rev-parse HEAD)
+	echo >&2 updating to "$1"
 
-		git update-index -q --refresh &&
-		git read-tree -u -m HEAD "$1" || {
-			status=$?
-			echo >&2 read-tree failed
-			exit $status
-		}
-		EOF
-	) &&
+	git update-index -q --refresh &&
+	git read-tree -u -m HEAD "$1" || {
+		status=$?
+		echo >&2 read-tree failed
+		exit $status
+	}
+	EOF
 
 	# Try pushing into a pristine
 	git push testrepo main &&
@@ -1728,35 +1760,32 @@ test_expect_success 'updateInstead with push-to-checkout hook' '
 	) &&
 
 	# push into void
-	rm -fr void &&
+	test_when_finished "rm -rf void" &&
 	git init void &&
-	(
-		cd void &&
-		git config receive.denyCurrentBranch updateInstead &&
-		write_script .git/hooks/push-to-checkout <<-\EOF
-		if git rev-parse --quiet --verify HEAD
-		then
-			has_head=yes
-			echo >&2 updating from $(git rev-parse HEAD)
-		else
-			has_head=no
-			echo >&2 pushing into void
-		fi
-		echo >&2 updating to "$1"
+	git -C void config receive.denyCurrentBranch updateInstead &&
+	test_hook -C void push-to-checkout <<-\EOF &&
+	if git rev-parse --quiet --verify HEAD
+	then
+		has_head=yes
+		echo >&2 updating from $(git rev-parse HEAD)
+	else
+		has_head=no
+		echo >&2 pushing into void
+	fi
+	echo >&2 updating to "$1"
 
-		git update-index -q --refresh &&
-		case "$has_head" in
-		yes)
-			git read-tree -u -m HEAD "$1" ;;
-		no)
-			git read-tree -u -m "$1" ;;
-		esac || {
-			status=$?
-			echo >&2 read-tree failed
-			exit $status
-		}
-		EOF
-	) &&
+	git update-index -q --refresh &&
+	case "$has_head" in
+	yes)
+		git read-tree -u -m HEAD "$1" ;;
+	no)
+		git read-tree -u -m "$1" ;;
+	esac || {
+		status=$?
+		echo >&2 read-tree failed
+		exit $status
+	}
+	EOF
 
 	git push void main &&
 	(
@@ -1807,6 +1836,67 @@ test_expect_success 'refuse fetch to current branch of bare repository worktree'
 	test_commit banana &&
 	test_must_fail git -C bare.git fetch .. HEAD:wt &&
 	git -C bare.git fetch -u .. HEAD:wt
+'
+
+test_expect_success 'refuse to push a hidden ref, and make sure do not pollute the repository' '
+	mk_empty testrepo &&
+	git -C testrepo config receive.hiderefs refs/hidden &&
+	git -C testrepo config receive.unpackLimit 1 &&
+	test_must_fail git push testrepo HEAD:refs/hidden/foo &&
+	test_dir_is_empty testrepo/.git/objects/pack
+'
+
+test_expect_success LIBCURL 'fetch warns or fails when using username:password' '
+	message="URL '\''https://username:<redacted>@localhost/'\'' uses plaintext credentials" &&
+	test_must_fail git -c transfer.credentialsInUrl=allow fetch https://username:password@localhost 2>err &&
+	! grep "$message" err &&
+
+	test_must_fail git -c transfer.credentialsInUrl=warn fetch https://username:password@localhost 2>err &&
+	grep "warning: $message" err >warnings &&
+	test_line_count = 3 warnings &&
+
+	test_must_fail git -c transfer.credentialsInUrl=die fetch https://username:password@localhost 2>err &&
+	grep "fatal: $message" err >warnings &&
+	test_line_count = 1 warnings &&
+
+	test_must_fail git -c transfer.credentialsInUrl=die fetch https://username:@localhost 2>err &&
+	grep "fatal: $message" err >warnings &&
+	test_line_count = 1 warnings
+'
+
+
+test_expect_success LIBCURL 'push warns or fails when using username:password' '
+	message="URL '\''https://username:<redacted>@localhost/'\'' uses plaintext credentials" &&
+	test_must_fail git -c transfer.credentialsInUrl=allow push https://username:password@localhost 2>err &&
+	! grep "$message" err &&
+
+	test_must_fail git -c transfer.credentialsInUrl=warn push https://username:password@localhost 2>err &&
+	grep "warning: $message" err >warnings &&
+	test_must_fail git -c transfer.credentialsInUrl=die push https://username:password@localhost 2>err &&
+	grep "fatal: $message" err >warnings &&
+	test_line_count = 1 warnings
+'
+
+test_expect_success 'push with config push.useBitmaps' '
+	mk_test testrepo heads/main &&
+	git checkout main &&
+	test_unconfig push.useBitmaps &&
+	GIT_TRACE2_EVENT="$PWD/default" \
+	git push testrepo main:test &&
+	test_subcommand git pack-objects --all-progress-implied --revs --stdout \
+		--thin --delta-base-offset -q <default &&
+
+	test_config push.useBitmaps true &&
+	GIT_TRACE2_EVENT="$PWD/true" \
+	git push testrepo main:test2 &&
+	test_subcommand git pack-objects --all-progress-implied --revs --stdout \
+		--thin --delta-base-offset -q <true &&
+
+	test_config push.useBitmaps false &&
+	GIT_TRACE2_EVENT="$PWD/false" \
+	git push testrepo main:test3 &&
+	test_subcommand git pack-objects --all-progress-implied --revs --stdout \
+		--thin --delta-base-offset -q --no-use-bitmap-index <false
 '
 
 test_done

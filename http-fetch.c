@@ -55,7 +55,7 @@ static void fetch_single_packfile(struct object_id *packfile_hash,
 	http_init(NULL, url, 0);
 
 	preq = new_direct_http_pack_request(packfile_hash->hash, xstrdup(url));
-	if (preq == NULL)
+	if (!preq)
 		die("couldn't create http pack request");
 	preq->slot->results = &results;
 	preq->index_pack_args = index_pack_args;
@@ -141,7 +141,7 @@ int cmd_main(int argc, const char **argv)
 
 	if (packfile) {
 		if (!index_pack_args.nr)
-			die(_("--packfile requires --index-pack-args"));
+			die(_("the option '%s' requires '%s'"), "--packfile", "--index-pack-args");
 
 		fetch_single_packfile(&packfile_hash, argv[arg],
 				      index_pack_args.v);
@@ -150,7 +150,7 @@ int cmd_main(int argc, const char **argv)
 	}
 
 	if (index_pack_args.nr)
-		die(_("--index-pack-args can only be used with --packfile"));
+		die(_("the option '%s' requires '%s'"), "--index-pack-args", "--packfile");
 
 	if (commits_on_stdin) {
 		commits = walker_targets_stdin(&commit_id, &write_ref);

@@ -20,6 +20,7 @@
 #include "oid-array.h"
 #include "column.h"
 #include "ref-filter.h"
+#include "date.h"
 
 static const char * const git_tag_usage[] = {
 	N_("git tag [-a | -s | -u <key-id>] [-f] [-m <msg> | -F <file>]\n"
@@ -238,7 +239,7 @@ static int build_tag_object(struct strbuf *buf, int sign, struct object_id *resu
 {
 	if (sign && do_sign(buf) < 0)
 		return error(_("unable to sign the tag"));
-	if (write_object_file(buf->buf, buf->len, tag_type, result) < 0)
+	if (write_object_file(buf->buf, buf->len, OBJ_TAG, result) < 0)
 		return error(_("unable to write tag file"));
 	return 0;
 }
@@ -363,7 +364,7 @@ static void create_reflog_msg(const struct object_id *oid, struct strbuf *sb)
 		strbuf_addstr(sb, "object of unknown type");
 		break;
 	case OBJ_COMMIT:
-		if ((buf = read_object_file(oid, &type, &size)) != NULL) {
+		if ((buf = read_object_file(oid, &type, &size))) {
 			subject_len = find_commit_subject(buf, &subject_start);
 			strbuf_insert(sb, sb->len, subject_start, subject_len);
 		} else {
@@ -371,7 +372,7 @@ static void create_reflog_msg(const struct object_id *oid, struct strbuf *sb)
 		}
 		free(buf);
 
-		if ((c = lookup_commit_reference(the_repository, oid)) != NULL)
+		if ((c = lookup_commit_reference(the_repository, oid)))
 			strbuf_addf(sb, ", %s", show_date(c->date, 0, DATE_MODE(SHORT)));
 		break;
 	case OBJ_TREE:
@@ -483,6 +484,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		OPT_END()
 	};
 	int ret = 0;
+	const char *only_in_list = NULL;
 
 	setup_ref_filter_porcelain_msg();
 
@@ -522,7 +524,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 	finalize_colopts(&colopts, -1);
 	if (cmdmode == 'l' && filter.lines != -1) {
 		if (explicitly_enable_column(colopts))
-			die(_("--column and -n are incompatible"));
+			die(_("options '%s' and '%s' cannot be used together"), "--column", "-n");
 		colopts = 0;
 	}
 	sorting = ref_sorting_options(&sorting_options);
@@ -542,15 +544,19 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 		goto cleanup;
 	}
 	if (filter.lines != -1)
-		die(_("-n option is only allowed in list mode"));
-	if (filter.with_commit)
-		die(_("--contains option is only allowed in list mode"));
-	if (filter.no_commit)
-		die(_("--no-contains option is only allowed in list mode"));
-	if (filter.points_at.nr)
-		die(_("--points-at option is only allowed in list mode"));
-	if (filter.reachable_from || filter.unreachable_from)
-		die(_("--merged and --no-merged options are only allowed in list mode"));
+		only_in_list = "-n";
+	else if (filter.with_commit)
+		only_in_list = "--contains";
+	else if (filter.no_commit)
+		only_in_list = "--no-contains";
+	else if (filter.points_at.nr)
+		only_in_list = "--points-at";
+	else if (filter.reachable_from)
+		only_in_list = "--merged";
+	else if (filter.unreachable_from)
+		only_in_list = "--no-merged";
+	if (only_in_list)
+		die(_("the '%s' option is only allowed in list mode"), only_in_list);
 	if (cmdmode == 'd') {
 		ret = delete_tags(argv);
 		goto cleanup;
@@ -564,7 +570,7 @@ int cmd_tag(int argc, const char **argv, const char *prefix)
 
 	if (msg.given || msgfile) {
 		if (msg.given && msgfile)
-			die(_("only one -F or -m option is allowed."));
+			die(_("options '%s' and '%s' cannot be used together"), "-F", "-m");
 		if (msg.given)
 			strbuf_addbuf(&buf, &(msg.buf));
 		else {

@@ -58,11 +58,6 @@ struct worktree;
  * resolved. The function returns NULL for such ref names.
  * Caps and underscores refers to the special refs, such as HEAD,
  * FETCH_HEAD and friends, that all live outside of the refs/ directory.
- *
- * Callers should not inspect "errno" on failure, but rather pass in a
- * "failure_errno" parameter, on failure the "errno" will indicate the
- * type of failure encountered, but not necessarily one that came from
- * a syscall. We might have faked it up.
  */
 #define RESOLVE_REF_READING 0x01
 #define RESOLVE_REF_NO_RECURSE 0x02
@@ -72,7 +67,7 @@ const char *refs_resolve_ref_unsafe(struct ref_store *refs,
 				    const char *refname,
 				    int resolve_flags,
 				    struct object_id *oid,
-				    int *flags, int *failure_errno);
+				    int *flags);
 
 const char *resolve_ref_unsafe(const char *refname, int resolve_flags,
 			       struct object_id *oid, int *flags);
@@ -86,6 +81,9 @@ char *resolve_refdup(const char *refname, int resolve_flags,
 int read_ref_full(const char *refname, int resolve_flags,
 		  struct object_id *oid, int *flags);
 int read_ref(const char *refname, struct object_id *oid);
+
+int refs_read_symbolic_ref(struct ref_store *ref_store, const char *refname,
+			   struct strbuf *referent);
 
 /*
  * Return 0 if a reference named refname could be created without
@@ -776,6 +774,20 @@ int initial_ref_transaction_commit(struct ref_transaction *transaction,
 				   struct strbuf *err);
 
 /*
+ * Execute the given callback function for each of the reference updates which
+ * have been queued in the given transaction. `old_oid` and `new_oid` may be
+ * `NULL` pointers depending on whether the update has these object IDs set or
+ * not.
+ */
+typedef void ref_transaction_for_each_queued_update_fn(const char *refname,
+						       const struct object_id *old_oid,
+						       const struct object_id *new_oid,
+						       void *cb_data);
+void ref_transaction_for_each_queued_update(struct ref_transaction *transaction,
+					    ref_transaction_for_each_queued_update_fn cb,
+					    void *cb_data);
+
+/*
  * Free `*transaction` and all associated data.
  */
 void ref_transaction_free(struct ref_transaction *transaction);
@@ -820,8 +832,7 @@ enum ref_type ref_type(const char *refname);
 enum expire_reflog_flags {
 	EXPIRE_REFLOGS_DRY_RUN = 1 << 0,
 	EXPIRE_REFLOGS_UPDATE_REF = 1 << 1,
-	EXPIRE_REFLOGS_VERBOSE = 1 << 2,
-	EXPIRE_REFLOGS_REWRITE = 1 << 3
+	EXPIRE_REFLOGS_REWRITE = 1 << 2,
 };
 
 /*

@@ -6,7 +6,8 @@ TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 check_config () {
-	if test -d "$1" && test -f "$1/config" && test -d "$1/refs"
+	if test_path_is_dir "$1" &&
+	   test_path_is_file "$1/config" && test_path_is_dir "$1/refs"
 	then
 		: happy
 	else
@@ -331,7 +332,7 @@ test_expect_success 'init with separate gitdir' '
 
 test_expect_success 'explicit bare & --separate-git-dir incompatible' '
 	test_must_fail git init --bare --separate-git-dir goop.git bare.git 2>err &&
-	test_i18ngrep "mutually exclusive" err
+	test_i18ngrep "cannot be used together" err
 '
 
 test_expect_success 'implicit bare & --separate-git-dir incompatible' '

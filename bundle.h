@@ -4,12 +4,14 @@
 #include "strvec.h"
 #include "cache.h"
 #include "string-list.h"
+#include "list-objects-filter-options.h"
 
 struct bundle_header {
 	unsigned version;
 	struct string_list prerequisites;
 	struct string_list references;
 	const struct git_hash_algo *hash_algo;
+	struct list_objects_filter_options filter;
 };
 
 #define BUNDLE_HEADER_INIT \
@@ -22,6 +24,8 @@ void bundle_header_release(struct bundle_header *header);
 
 int is_bundle(const char *path, int quiet);
 int read_bundle_header(const char *path, struct bundle_header *header);
+int read_bundle_header_fd(int fd, struct bundle_header *header,
+			  const char *report_path);
 int create_bundle(struct repository *r, const char *path,
 		  int argc, const char **argv, struct strvec *pack_options,
 		  int version);

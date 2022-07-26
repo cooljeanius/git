@@ -32,7 +32,6 @@ static int add_renormalize;
 static int pathspec_file_nul;
 static int include_sparse;
 static const char *pathspec_from_file;
-static int legacy_stash_p; /* support for the scripted `git stash` */
 
 struct update_callback_data {
 	int flags;
@@ -142,8 +141,17 @@ int add_files_to_cache(const char *prefix,
 	rev.diffopt.format_callback_data = &data;
 	rev.diffopt.flags.override_submodule_config = 1;
 	rev.max_count = 0; /* do not compare unmerged paths with stage #2 */
+
+	/*
+	 * Use an ODB transaction to optimize adding multiple objects.
+	 * This function is invoked from commands other than 'add', which
+	 * may not have their own transaction active.
+	 */
+	begin_odb_transaction();
 	run_diff_files(&rev, DIFF_RACY_IS_MODIFIED);
-	clear_pathspec(&rev.prune_data);
+	end_odb_transaction();
+
+	release_revisions(&rev);
 	return !!data.add_errors;
 }
 
@@ -237,17 +245,12 @@ int run_add_interactive(const char *revision, const char *patch_mode,
 	int use_builtin_add_i =
 		git_env_bool("GIT_TEST_ADD_I_USE_BUILTIN", -1);
 
-	if (use_builtin_add_i < 0) {
-		int experimental;
-		if (!git_config_get_bool("add.interactive.usebuiltin",
-					 &use_builtin_add_i))
-			; /* ok */
-		else if (!git_config_get_bool("feature.experimental", &experimental) &&
-			 experimental)
-			use_builtin_add_i = 1;
-	}
+	if (use_builtin_add_i < 0 &&
+	    git_config_get_bool("add.interactive.usebuiltin",
+				&use_builtin_add_i))
+		use_builtin_add_i = 1;
 
-	if (use_builtin_add_i == 1) {
+	if (use_builtin_add_i != 0) {
 		enum add_p_mode mode;
 
 		if (!patch_mode)
@@ -341,6 +344,7 @@ static int edit_patch(int argc, const char **argv, const char *prefix)
 
 	unlink(file);
 	free(file);
+	release_revisions(&rev);
 	return 0;
 }
 
@@ -388,8 +392,6 @@ static struct option builtin_add_options[] = {
 		   N_("override the executable bit of the listed files")),
 	OPT_HIDDEN_BOOL(0, "warn-embedded-repo", &warn_on_embedded_repo,
 			N_("warn when adding an embedded repository")),
-	OPT_HIDDEN_BOOL(0, "legacy-stash-p", &legacy_stash_p,
-			N_("backend for `git stash -p`")),
 	OPT_PATHSPEC_FROM_FILE(&pathspec_from_file),
 	OPT_PATHSPEC_FILE_NUL(&pathspec_file_nul),
 	OPT_END(),
@@ -507,26 +509,15 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 		add_interactive = 1;
 	if (add_interactive) {
 		if (show_only)
-			die(_("--dry-run is incompatible with --interactive/--patch"));
+			die(_("options '%s' and '%s' cannot be used together"), "--dry-run", "--interactive/--patch");
 		if (pathspec_from_file)
-			die(_("--pathspec-from-file is incompatible with --interactive/--patch"));
+			die(_("options '%s' and '%s' cannot be used together"), "--pathspec-from-file", "--interactive/--patch");
 		exit(interactive_add(argv + 1, prefix, patch_interactive));
-	}
-	if (legacy_stash_p) {
-		struct pathspec pathspec;
-
-		parse_pathspec(&pathspec, 0,
-			PATHSPEC_PREFER_FULL |
-			PATHSPEC_SYMLINK_LEADING_PATH |
-			PATHSPEC_PREFIX_ORIGIN,
-			prefix, argv);
-
-		return run_add_interactive(NULL, "--patch=stash", &pathspec);
 	}
 
 	if (edit_interactive) {
 		if (pathspec_from_file)
-			die(_("--pathspec-from-file is incompatible with --edit"));
+			die(_("options '%s' and '%s' cannot be used together"), "--pathspec-from-file", "--edit");
 		return(edit_patch(argc, argv, prefix));
 	}
 	argc--;
@@ -538,10 +529,10 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 		addremove = 0; /* "-u" was given but not "-A" */
 
 	if (addremove && take_worktree_changes)
-		die(_("-A and -u are mutually incompatible"));
+		die(_("options '%s' and '%s' cannot be used together"), "-A", "-u");
 
 	if (!show_only && ignore_missing)
-		die(_("Option --ignore-missing can only be used together with --dry-run"));
+		die(_("the option '%s' requires '%s'"), "--ignore-missing", "--dry-run");
 
 	if (chmod_arg && ((chmod_arg[0] != '-' && chmod_arg[0] != '+') ||
 			  chmod_arg[1] != 'x' || chmod_arg[2]))
@@ -566,14 +557,14 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 
 	if (pathspec_from_file) {
 		if (pathspec.nr)
-			die(_("--pathspec-from-file is incompatible with pathspec arguments"));
+			die(_("'%s' and pathspec arguments cannot be used together"), "--pathspec-from-file");
 
 		parse_pathspec_file(&pathspec, PATHSPEC_ATTR,
 				    PATHSPEC_PREFER_FULL |
 				    PATHSPEC_SYMLINK_LEADING_PATH,
 				    prefix, pathspec_from_file, pathspec_file_nul);
 	} else if (pathspec_file_nul) {
-		die(_("--pathspec-file-nul requires --pathspec-from-file"));
+		die(_("the option '%s' requires '%s'"), "--pathspec-file-nul", "--pathspec-from-file");
 	}
 
 	if (require_pathspec && pathspec.nr == 0) {
@@ -684,7 +675,7 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 		string_list_clear(&only_match_skip_worktree, 0);
 	}
 
-	plug_bulk_checkin();
+	begin_odb_transaction();
 
 	if (add_renormalize)
 		exit_status |= renormalize_tracked_files(&pathspec, flags);
@@ -696,7 +687,7 @@ int cmd_add(int argc, const char **argv, const char *prefix)
 
 	if (chmod_arg && pathspec.nr)
 		exit_status |= chmod_pathspec(&pathspec, chmod_arg[0], show_only);
-	unplug_bulk_checkin();
+	end_odb_transaction();
 
 finish:
 	if (write_locked_index(&the_index, &lock_file,

@@ -111,7 +111,7 @@ static struct ewah_bitmap *lookup_stored_bitmap(struct stored_bitmap *st)
 	struct ewah_bitmap *parent;
 	struct ewah_bitmap *composed;
 
-	if (st->xor == NULL)
+	if (!st->xor)
 		return st->root;
 
 	composed = ewah_pool_new();
@@ -279,7 +279,7 @@ static int load_bitmap_entries_v1(struct bitmap_index *index)
 		if (xor_offset > 0) {
 			xor_bitmap = recent_bitmaps[(i - xor_offset) % MAX_XOR_OFFSET];
 
-			if (xor_bitmap == NULL)
+			if (!xor_bitmap)
 				return error("Invalid XOR offset in bitmap pack index");
 		}
 
@@ -315,6 +315,8 @@ static int open_midx_bitmap_1(struct bitmap_index *bitmap_git,
 	struct stat st;
 	char *idx_name = midx_bitmap_filename(midx);
 	int fd = git_open(idx_name);
+	uint32_t i;
+	struct packed_git *preferred;
 
 	free(idx_name);
 
@@ -353,12 +355,28 @@ static int open_midx_bitmap_1(struct bitmap_index *bitmap_git,
 		warning(_("multi-pack bitmap is missing required reverse index"));
 		goto cleanup;
 	}
+
+	for (i = 0; i < bitmap_git->midx->num_packs; i++) {
+		if (prepare_midx_pack(the_repository, bitmap_git->midx, i))
+			die(_("could not open pack %s"),
+			    bitmap_git->midx->pack_names[i]);
+	}
+
+	preferred = bitmap_git->midx->packs[midx_preferred_pack(bitmap_git)];
+	if (!is_pack_valid(preferred)) {
+		warning(_("preferred pack (%s) is invalid"),
+			preferred->pack_name);
+		goto cleanup;
+	}
+
 	return 0;
 
 cleanup:
 	munmap(bitmap_git->map, bitmap_git->map_size);
 	bitmap_git->map_size = 0;
+	bitmap_git->map_pos = 0;
 	bitmap_git->map = NULL;
+	bitmap_git->midx = NULL;
 	return -1;
 }
 
@@ -405,6 +423,8 @@ static int open_pack_bitmap_1(struct bitmap_index *bitmap_git, struct packed_git
 		munmap(bitmap_git->map, bitmap_git->map_size);
 		bitmap_git->map = NULL;
 		bitmap_git->map_size = 0;
+		bitmap_git->map_pos = 0;
+		bitmap_git->pack = NULL;
 		return -1;
 	}
 
@@ -425,8 +445,6 @@ static int load_reverse_index(struct bitmap_index *bitmap_git)
 		 * since we will need to make use of them in pack-objects.
 		 */
 		for (i = 0; i < bitmap_git->midx->num_packs; i++) {
-			if (prepare_midx_pack(the_repository, bitmap_git->midx, i))
-				die(_("load_reverse_index: could not open pack"));
 			ret = load_pack_revindex(bitmap_git->midx->packs[i]);
 			if (ret)
 				return ret;
@@ -724,7 +742,7 @@ static int add_commit_to_bitmap(struct bitmap_index *bitmap_git,
 	if (!or_with)
 		return 0;
 
-	if (*base == NULL)
+	if (!*base)
 		*base = ewah_to_bitmap(or_with);
 	else
 		bitmap_or_ewah(*base, or_with);
@@ -735,8 +753,7 @@ static int add_commit_to_bitmap(struct bitmap_index *bitmap_git,
 static struct bitmap *find_objects(struct bitmap_index *bitmap_git,
 				   struct rev_info *revs,
 				   struct object_list *roots,
-				   struct bitmap *seen,
-				   struct list_objects_filter_options *filter)
+				   struct bitmap *seen)
 {
 	struct bitmap *base = NULL;
 	int needs_walk = 0;
@@ -768,7 +785,7 @@ static struct bitmap *find_objects(struct bitmap_index *bitmap_git,
 	 * Best case scenario: We found bitmaps for all the roots,
 	 * so the resulting `or` bitmap has the full reachability analysis
 	 */
-	if (not_mapped == NULL)
+	if (!not_mapped)
 		return base;
 
 	roots = not_mapped;
@@ -802,7 +819,7 @@ static struct bitmap *find_objects(struct bitmap_index *bitmap_git,
 		struct include_data incdata;
 		struct bitmap_show_data show_data;
 
-		if (base == NULL)
+		if (!base)
 			base = bitmap_new();
 
 		incdata.bitmap_git = bitmap_git;
@@ -819,9 +836,9 @@ static struct bitmap *find_objects(struct bitmap_index *bitmap_git,
 		show_data.bitmap_git = bitmap_git;
 		show_data.base = base;
 
-		traverse_commit_list_filtered(filter, revs,
-					      show_commit, show_object,
-					      &show_data, NULL);
+		traverse_commit_list(revs,
+				     show_commit, show_object,
+				     &show_data);
 
 		revs->include_check = NULL;
 		revs->include_check_obj = NULL;
@@ -1215,7 +1232,6 @@ static int can_filter_bitmap(struct list_objects_filter_options *filter)
 }
 
 struct bitmap_index *prepare_bitmap_walk(struct rev_info *revs,
-					 struct list_objects_filter_options *filter,
 					 int filter_provided_objects)
 {
 	unsigned int i;
@@ -1236,7 +1252,7 @@ struct bitmap_index *prepare_bitmap_walk(struct rev_info *revs,
 	if (revs->prune)
 		return NULL;
 
-	if (!can_filter_bitmap(filter))
+	if (!can_filter_bitmap(&revs->filter))
 		return NULL;
 
 	/* try to open a bitmapped pack, but don't parse it yet
@@ -1293,17 +1309,15 @@ struct bitmap_index *prepare_bitmap_walk(struct rev_info *revs,
 
 	if (haves) {
 		revs->ignore_missing_links = 1;
-		haves_bitmap = find_objects(bitmap_git, revs, haves, NULL,
-					    filter);
+		haves_bitmap = find_objects(bitmap_git, revs, haves, NULL);
 		reset_revision_walk();
 		revs->ignore_missing_links = 0;
 
-		if (haves_bitmap == NULL)
+		if (!haves_bitmap)
 			BUG("failed to perform bitmap walk");
 	}
 
-	wants_bitmap = find_objects(bitmap_git, revs, wants, haves_bitmap,
-				    filter);
+	wants_bitmap = find_objects(bitmap_git, revs, wants, haves_bitmap);
 
 	if (!wants_bitmap)
 		BUG("failed to perform bitmap walk");
@@ -1311,8 +1325,10 @@ struct bitmap_index *prepare_bitmap_walk(struct rev_info *revs,
 	if (haves_bitmap)
 		bitmap_and_not(wants_bitmap, haves_bitmap);
 
-	filter_bitmap(bitmap_git, (filter && filter_provided_objects) ? NULL : wants,
-		      wants_bitmap, filter);
+	filter_bitmap(bitmap_git,
+		      (revs->filter.choice && filter_provided_objects) ? NULL : wants,
+		      wants_bitmap,
+		      &revs->filter);
 
 	bitmap_git->result = wants_bitmap;
 	bitmap_git->haves = haves_bitmap;
@@ -1696,7 +1712,7 @@ void test_bitmap_walk(struct rev_info *revs)
 		result = ewah_to_bitmap(bm);
 	}
 
-	if (result == NULL)
+	if (!result)
 		die("Commit %s doesn't have an indexed bitmap", oid_to_hex(&root->oid));
 
 	revs->tag_objects = 1;

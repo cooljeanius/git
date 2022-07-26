@@ -12,11 +12,12 @@
 #include "object-store.h"
 #include "strvec.h"
 #include "commit-reach.h"
+#include "progress.h"
 
 static const char * const builtin_remote_usage[] = {
-	N_("git remote [-v | --verbose]"),
+	"git remote [-v | --verbose]",
 	N_("git remote add [-t <branch>] [-m <master>] [-f] [--tags | --no-tags] [--mirror=<fetch|push>] <name> <url>"),
-	N_("git remote rename <old> <new>"),
+	N_("git remote rename [--[no-]progress] <old> <new>"),
 	N_("git remote remove <name>"),
 	N_("git remote set-head <name> (-a | --auto | -d | --delete | <branch>)"),
 	N_("git remote [-v | --verbose] show [-n] <name>"),
@@ -36,7 +37,7 @@ static const char * const builtin_remote_add_usage[] = {
 };
 
 static const char * const builtin_remote_rename_usage[] = {
-	N_("git remote rename <old> <new>"),
+	N_("git remote rename [--[no-]progress] <old> <new>"),
 	NULL
 };
 
@@ -343,12 +344,13 @@ static void read_branches(void)
 
 struct ref_states {
 	struct remote *remote;
-	struct string_list new_refs, stale, tracked, heads, push;
+	struct string_list new_refs, skipped, stale, tracked, heads, push;
 	int queried;
 };
 
 #define REF_STATES_INIT { \
 	.new_refs = STRING_LIST_INIT_DUP, \
+	.skipped = STRING_LIST_INIT_DUP, \
 	.stale = STRING_LIST_INIT_DUP, \
 	.tracked = STRING_LIST_INIT_DUP, \
 	.heads = STRING_LIST_INIT_DUP, \
@@ -367,7 +369,9 @@ static int get_ref_states(const struct ref *remote_refs, struct ref_states *stat
 				states->remote->fetch.raw[i]);
 
 	for (ref = fetch_map; ref; ref = ref->next) {
-		if (!ref->peer_ref || !ref_exists(ref->peer_ref->name))
+		if (omit_name_by_refspec(ref->name, &states->remote->fetch))
+			string_list_append(&states->skipped, abbrev_branch(ref->name));
+		else if (!ref->peer_ref || !ref_exists(ref->peer_ref->name))
 			string_list_append(&states->new_refs, abbrev_branch(ref->name));
 		else
 			string_list_append(&states->tracked, abbrev_branch(ref->name));
@@ -382,6 +386,7 @@ static int get_ref_states(const struct ref *remote_refs, struct ref_states *stat
 	free_refs(fetch_map);
 
 	string_list_sort(&states->new_refs);
+	string_list_sort(&states->skipped);
 	string_list_sort(&states->tracked);
 	string_list_sort(&states->stale);
 
@@ -571,6 +576,7 @@ struct rename_info {
 	const char *old_name;
 	const char *new_name;
 	struct string_list *remote_branches;
+	uint32_t symrefs_nr;
 };
 
 static int read_remote_branches(const char *refname,
@@ -587,10 +593,12 @@ static int read_remote_branches(const char *refname,
 		item = string_list_append(rename->remote_branches, refname);
 		symref = resolve_ref_unsafe(refname, RESOLVE_REF_READING,
 					    NULL, &flag);
-		if (symref && (flag & REF_ISSYMREF))
+		if (symref && (flag & REF_ISSYMREF)) {
 			item->util = xstrdup(symref);
-		else
+			rename->symrefs_nr++;
+		} else {
 			item->util = NULL;
+		}
 	}
 	strbuf_release(&buf);
 
@@ -674,7 +682,9 @@ static void handle_push_default(const char* old_name, const char* new_name)
 
 static int mv(int argc, const char **argv)
 {
+	int show_progress = isatty(2);
 	struct option options[] = {
+		OPT_BOOL(0, "progress", &show_progress, N_("force progress reporting")),
 		OPT_END()
 	};
 	struct remote *oldremote, *newremote;
@@ -682,14 +692,19 @@ static int mv(int argc, const char **argv)
 		old_remote_context = STRBUF_INIT;
 	struct string_list remote_branches = STRING_LIST_INIT_DUP;
 	struct rename_info rename;
-	int i, refspec_updated = 0;
+	int i, refs_renamed_nr = 0, refspec_updated = 0;
+	struct progress *progress = NULL;
 
-	if (argc != 3)
+	argc = parse_options(argc, argv, NULL, options,
+			     builtin_remote_rename_usage, 0);
+
+	if (argc != 2)
 		usage_with_options(builtin_remote_rename_usage, options);
 
-	rename.old_name = argv[1];
-	rename.new_name = argv[2];
+	rename.old_name = argv[0];
+	rename.new_name = argv[1];
 	rename.remote_branches = &remote_branches;
+	rename.symrefs_nr = 0;
 
 	oldremote = remote_get(rename.old_name);
 	if (!remote_is_configured(oldremote, 1)) {
@@ -764,15 +779,26 @@ static int mv(int argc, const char **argv)
 	 * the new symrefs.
 	 */
 	for_each_ref(read_remote_branches, &rename);
+	if (show_progress) {
+		/*
+		 * Count symrefs twice, since "renaming" them is done by
+		 * deleting and recreating them in two separate passes.
+		 */
+		progress = start_progress(_("Renaming remote references"),
+					  rename.remote_branches->nr + rename.symrefs_nr);
+	}
 	for (i = 0; i < remote_branches.nr; i++) {
 		struct string_list_item *item = remote_branches.items + i;
-		int flag = 0;
+		struct strbuf referent = STRBUF_INIT;
 
-		read_ref_full(item->string, RESOLVE_REF_READING, NULL, &flag);
-		if (!(flag & REF_ISSYMREF))
+		if (refs_read_symbolic_ref(get_main_ref_store(the_repository), item->string,
+					   &referent))
 			continue;
 		if (delete_ref(NULL, item->string, NULL, REF_NO_DEREF))
 			die(_("deleting '%s' failed"), item->string);
+
+		strbuf_release(&referent);
+		display_progress(progress, ++refs_renamed_nr);
 	}
 	for (i = 0; i < remote_branches.nr; i++) {
 		struct string_list_item *item = remote_branches.items + i;
@@ -788,6 +814,7 @@ static int mv(int argc, const char **argv)
 				item->string, buf.buf);
 		if (rename_ref(item->string, buf.buf, buf2.buf))
 			die(_("renaming '%s' failed"), item->string);
+		display_progress(progress, ++refs_renamed_nr);
 	}
 	for (i = 0; i < remote_branches.nr; i++) {
 		struct string_list_item *item = remote_branches.items + i;
@@ -807,7 +834,9 @@ static int mv(int argc, const char **argv)
 				item->string, buf.buf);
 		if (create_symref(buf.buf, buf2.buf, buf3.buf))
 			die(_("creating '%s' failed"), buf.buf);
+		display_progress(progress, ++refs_renamed_nr);
 	}
+	stop_progress(&progress);
 	string_list_clear(&remote_branches, 1);
 
 	handle_push_default(rename.old_name, rename.new_name);
@@ -916,6 +945,7 @@ static void clear_push_info(void *util, const char *string)
 static void free_remote_ref_states(struct ref_states *states)
 {
 	string_list_clear(&states->new_refs, 0);
+	string_list_clear(&states->skipped, 0);
 	string_list_clear(&states->stale, 1);
 	string_list_clear(&states->tracked, 0);
 	string_list_clear(&states->heads, 0);
@@ -1010,6 +1040,8 @@ static int show_remote_info_item(struct string_list_item *item, void *cb_data)
 			arg = states->remote->name;
 		} else if (string_list_has_string(&states->tracked, name))
 			arg = _(" tracked");
+		else if (string_list_has_string(&states->skipped, name))
+			arg = _(" skipped");
 		else if (string_list_has_string(&states->stale, name))
 			arg = _(" stale (use 'git remote prune' to remove)");
 		else
@@ -1160,14 +1192,22 @@ static int show_push_info_item(struct string_list_item *item, void *cb_data)
 static int get_one_entry(struct remote *remote, void *priv)
 {
 	struct string_list *list = priv;
-	struct strbuf url_buf = STRBUF_INIT;
+	struct strbuf remote_info_buf = STRBUF_INIT;
 	const char **url;
 	int i, url_nr;
 
 	if (remote->url_nr > 0) {
-		strbuf_addf(&url_buf, "%s (fetch)", remote->url[0]);
+		struct strbuf promisor_config = STRBUF_INIT;
+		const char *partial_clone_filter = NULL;
+
+		strbuf_addf(&promisor_config, "remote.%s.partialclonefilter", remote->name);
+		strbuf_addf(&remote_info_buf, "%s (fetch)", remote->url[0]);
+		if (!git_config_get_string_tmp(promisor_config.buf, &partial_clone_filter))
+			strbuf_addf(&remote_info_buf, " [%s]", partial_clone_filter);
+
+		strbuf_release(&promisor_config);
 		string_list_append(list, remote->name)->util =
-				strbuf_detach(&url_buf, NULL);
+				strbuf_detach(&remote_info_buf, NULL);
 	} else
 		string_list_append(list, remote->name)->util = NULL;
 	if (remote->pushurl_nr) {
@@ -1179,9 +1219,9 @@ static int get_one_entry(struct remote *remote, void *priv)
 	}
 	for (i = 0; i < url_nr; i++)
 	{
-		strbuf_addf(&url_buf, "%s (push)", url[i]);
+		strbuf_addf(&remote_info_buf, "%s (push)", url[i]);
 		string_list_append(list, remote->name)->util =
-				strbuf_detach(&url_buf, NULL);
+				strbuf_detach(&remote_info_buf, NULL);
 	}
 
 	return 0;
@@ -1275,6 +1315,7 @@ static int show(int argc, const char **argv)
 		/* remote branch info */
 		info.width = 0;
 		for_each_string_list(&info.states.new_refs, add_remote_to_show_info, &info);
+		for_each_string_list(&info.states.skipped, add_remote_to_show_info, &info);
 		for_each_string_list(&info.states.tracked, add_remote_to_show_info, &info);
 		for_each_string_list(&info.states.stale, add_remote_to_show_info, &info);
 		if (info.list.nr)

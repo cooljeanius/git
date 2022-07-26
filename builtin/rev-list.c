@@ -20,7 +20,7 @@
 #include "packfile.h"
 
 static const char rev_list_usage[] =
-"git rev-list [OPTION] <commit-id>... [ -- paths... ]\n"
+"git rev-list [<options>] <commit-id>... [-- <path>...]\n"
 "  limiting output:\n"
 "    --max-count=<n>\n"
 "    --max-age=<epoch>\n"
@@ -62,7 +62,6 @@ static const char rev_list_usage[] =
 static struct progress *progress;
 static unsigned progress_counter;
 
-static struct list_objects_filter_options filter_options;
 static struct oidset omitted_objects;
 static int arg_print_omitted; /* print objects omitted by filter */
 
@@ -214,10 +213,8 @@ static void show_commit(struct commit *commit, void *data)
 
 static void finish_commit(struct commit *commit)
 {
-	if (commit->parents) {
-		free_commit_list(commit->parents);
-		commit->parents = NULL;
-	}
+	free_commit_list(commit->parents);
+	commit->parents = NULL;
 	free_commit_buffer(the_repository->parsed_objects,
 			   commit);
 }
@@ -400,7 +397,6 @@ static inline int parse_missing_action_value(const char *value)
 }
 
 static int try_bitmap_count(struct rev_info *revs,
-			    struct list_objects_filter_options *filter,
 			    int filter_provided_objects)
 {
 	uint32_t commit_count = 0,
@@ -436,7 +432,7 @@ static int try_bitmap_count(struct rev_info *revs,
 	 */
 	max_count = revs->max_count;
 
-	bitmap_git = prepare_bitmap_walk(revs, filter, filter_provided_objects);
+	bitmap_git = prepare_bitmap_walk(revs, filter_provided_objects);
 	if (!bitmap_git)
 		return -1;
 
@@ -453,7 +449,6 @@ static int try_bitmap_count(struct rev_info *revs,
 }
 
 static int try_bitmap_traversal(struct rev_info *revs,
-				struct list_objects_filter_options *filter,
 				int filter_provided_objects)
 {
 	struct bitmap_index *bitmap_git;
@@ -465,7 +460,7 @@ static int try_bitmap_traversal(struct rev_info *revs,
 	if (revs->max_count >= 0)
 		return -1;
 
-	bitmap_git = prepare_bitmap_walk(revs, filter, filter_provided_objects);
+	bitmap_git = prepare_bitmap_walk(revs, filter_provided_objects);
 	if (!bitmap_git)
 		return -1;
 
@@ -475,7 +470,6 @@ static int try_bitmap_traversal(struct rev_info *revs,
 }
 
 static int try_bitmap_disk_usage(struct rev_info *revs,
-				 struct list_objects_filter_options *filter,
 				 int filter_provided_objects)
 {
 	struct bitmap_index *bitmap_git;
@@ -483,7 +477,7 @@ static int try_bitmap_disk_usage(struct rev_info *revs,
 	if (!show_disk_usage)
 		return -1;
 
-	bitmap_git = prepare_bitmap_walk(revs, filter, filter_provided_objects);
+	bitmap_git = prepare_bitmap_walk(revs, filter_provided_objects);
 	if (!bitmap_git)
 		return -1;
 
@@ -506,6 +500,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	int use_bitmap_index = 0;
 	int filter_provided_objects = 0;
 	const char *show_progress = NULL;
+	int ret = 0;
 
 	if (argc == 2 && !strcmp(argv[1], "-h"))
 		usage(rev_list_usage);
@@ -538,7 +533,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		const char *arg = argv[i];
 		if (skip_prefix(arg, "--missing=", &arg)) {
 			if (revs.exclude_promisor_objects)
-				die(_("cannot combine --exclude-promisor-objects and --missing"));
+				die(_("options '%s' and '%s' cannot be used together"), "--exclude-promisor-objects", "--missing");
 			if (parse_missing_action_value(arg))
 				break;
 		}
@@ -589,21 +584,10 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		}
 		if (!strcmp(arg, "--test-bitmap")) {
 			test_bitmap_walk(&revs);
-			return 0;
+			goto cleanup;
 		}
 		if (skip_prefix(arg, "--progress=", &arg)) {
 			show_progress = arg;
-			continue;
-		}
-
-		if (skip_prefix(arg, ("--" CL_ARG__FILTER "="), &arg)) {
-			parse_list_objects_filter(&filter_options, arg);
-			if (filter_options.choice && !revs.blob_objects)
-				die(_("object filtering requires --objects"));
-			continue;
-		}
-		if (!strcmp(arg, ("--no-" CL_ARG__FILTER))) {
-			list_objects_filter_set_no_filter(&filter_options);
 			continue;
 		}
 		if (!strcmp(arg, "--filter-provided-objects")) {
@@ -676,7 +660,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (revs.count &&
 	    (revs.tag_objects || revs.tree_objects || revs.blob_objects) &&
 	    (revs.left_right || revs.cherry_mark))
-		die(_("marked counting is incompatible with --objects"));
+		die(_("marked counting and '%s' cannot be used together"), "--objects");
 
 	save_commit_buffer = (revs.verbose_header ||
 			      revs.grep_filter.pattern_list ||
@@ -688,12 +672,12 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		progress = start_delayed_progress(show_progress, 0);
 
 	if (use_bitmap_index) {
-		if (!try_bitmap_count(&revs, &filter_options, filter_provided_objects))
-			return 0;
-		if (!try_bitmap_disk_usage(&revs, &filter_options, filter_provided_objects))
-			return 0;
-		if (!try_bitmap_traversal(&revs, &filter_options, filter_provided_objects))
-			return 0;
+		if (!try_bitmap_count(&revs, filter_provided_objects))
+			goto cleanup;
+		if (!try_bitmap_disk_usage(&revs, filter_provided_objects))
+			goto cleanup;
+		if (!try_bitmap_traversal(&revs, filter_provided_objects))
+			goto cleanup;
 	}
 
 	if (prepare_revision_walk(&revs))
@@ -713,8 +697,10 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 
 		find_bisection(&revs.commits, &reaches, &all, bisect_flags);
 
-		if (bisect_show_vars)
-			return show_bisect_vars(&info, reaches, all);
+		if (bisect_show_vars) {
+			ret = show_bisect_vars(&info, reaches, all);
+			goto cleanup;
+		}
 	}
 
 	if (filter_provided_objects) {
@@ -733,7 +719,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 		oidset_init(&missing_objects, DEFAULT_OIDSET_SIZE);
 
 	traverse_commit_list_filtered(
-		&filter_options, &revs, show_commit, show_object, &info,
+		&revs, show_commit, show_object, &info,
 		(arg_print_omitted ? &omitted_objects : NULL));
 
 	if (arg_print_omitted) {
@@ -769,5 +755,7 @@ int cmd_rev_list(int argc, const char **argv, const char *prefix)
 	if (show_disk_usage)
 		printf("%"PRIuMAX"\n", (uintmax_t)total_disk_usage);
 
-	return 0;
+cleanup:
+	release_revisions(&revs);
+	return ret;
 }
