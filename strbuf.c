@@ -436,7 +436,7 @@ void strbuf_expand(struct strbuf *sb, const char *format, expand_fn_t fn,
 
 size_t strbuf_expand_literal_cb(struct strbuf *sb,
 				const char *placeholder,
-				void *context)
+				void *context UNUSED)
 {
 	int ch;
 
@@ -1199,4 +1199,10 @@ int strbuf_edit_interactively(struct strbuf *buffer, const char *path,
 
 	free(path2);
 	return res;
+}
+
+void strbuf_strip_file_from_path(struct strbuf *sb)
+{
+	char *path_sep = find_last_dir_sep(sb->buf);
+	strbuf_setlen(sb, path_sep ? path_sep - sb->buf + 1 : 0);
 }

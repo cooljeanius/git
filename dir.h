@@ -188,6 +188,7 @@ struct untracked_cache {
 	struct oid_stat ss_info_exclude;
 	struct oid_stat ss_excludes_file;
 	const char *exclude_per_dir;
+	char *exclude_per_dir_to_free;
 	struct strbuf ident;
 	/*
 	 * dir_struct#flags must match dir_flags or the untracked
@@ -414,7 +415,7 @@ int match_basename(const char *, int,
 		   const char *, int, int, unsigned);
 int match_pathname(const char *, int,
 		   const char *, int,
-		   const char *, int, int, unsigned);
+		   const char *, int, int);
 
 struct path_pattern *last_matching_pattern(struct dir_struct *dir,
 					   struct index_state *istate,

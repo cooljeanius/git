@@ -655,10 +655,10 @@ void parse_path_pattern(const char **pattern,
 	*patternlen = len;
 }
 
-int pl_hashmap_cmp(const void *unused_cmp_data,
+int pl_hashmap_cmp(const void *cmp_data UNUSED,
 		   const struct hashmap_entry *a,
 		   const struct hashmap_entry *b,
-		   const void *key)
+		   const void *key UNUSED)
 {
 	const struct pattern_entry *ee1 =
 			container_of(a, struct pattern_entry, ent);
@@ -669,9 +669,7 @@ int pl_hashmap_cmp(const void *unused_cmp_data,
 			 ? ee1->patternlen
 			 : ee2->patternlen;
 
-	if (ignore_case)
-		return strncasecmp(ee1->pattern, ee2->pattern, min_len);
-	return strncmp(ee1->pattern, ee2->pattern, min_len);
+	return fspathncmp(ee1->pattern, ee2->pattern, min_len);
 }
 
 static char *dup_and_filter_pattern(const char *pattern)
@@ -1244,8 +1242,7 @@ int match_basename(const char *basename, int basenamelen,
 
 int match_pathname(const char *pathname, int pathlen,
 		   const char *base, int baselen,
-		   const char *pattern, int prefix, int patternlen,
-		   unsigned flags)
+		   const char *pattern, int prefix, int patternlen)
 {
 	const char *name;
 	int namelen;
@@ -1347,8 +1344,7 @@ static struct path_pattern *last_matching_pattern_from_list(const char *pathname
 		if (match_pathname(pathname, pathlen,
 				   pattern->base,
 				   pattern->baselen ? pattern->baselen - 1 : 0,
-				   exclude, prefix, pattern->patternlen,
-				   pattern->flags)) {
+				   exclude, prefix, pattern->patternlen)) {
 			res = pattern;
 			break;
 		}
@@ -3585,8 +3581,12 @@ static void free_untracked(struct untracked_cache_dir *ucd)
 
 void free_untracked_cache(struct untracked_cache *uc)
 {
-	if (uc)
-		free_untracked(uc->root);
+	if (!uc)
+		return;
+
+	free(uc->exclude_per_dir_to_free);
+	strbuf_release(&uc->ident);
+	free_untracked(uc->root);
 	free(uc);
 }
 
@@ -3743,7 +3743,7 @@ struct untracked_cache *read_untracked_extension(const void *data, unsigned long
 		      next + offset + hashsz);
 	uc->dir_flags = get_be32(next + ouc_offset(dir_flags));
 	exclude_per_dir = (const char *)next + exclude_per_dir_offset;
-	uc->exclude_per_dir = xstrdup(exclude_per_dir);
+	uc->exclude_per_dir = uc->exclude_per_dir_to_free = xstrdup(exclude_per_dir);
 	/* NUL after exclude_per_dir is covered by sizeof(*ouc) */
 	next += exclude_per_dir_offset + strlen(exclude_per_dir) + 1;
 	if (next >= end)

@@ -116,7 +116,7 @@ OPTIONS
 
 -f::
 --force::
-	Reset <branchname> to <startpoint>, even if <branchname> exists
+	Reset <branchname> to <start-point>, even if <branchname> exists
 	already. Without `-f`, 'git branch' refuses to change an existing branch.
 	In combination with `-d` (or `--delete`), allow deleting the
 	branch irrespective of its merged status, or whether it even
@@ -335,6 +335,10 @@ CONFIGURATION
 `pager.branch` is only respected when listing branches, i.e., when
 `--list` is used or implied. The default is to use a pager.
 See linkgit:git-config[1].
+
+include::includes/cmd-config-section-rest.txt[]
+
+include::config/branch.txt[]
 
 EXAMPLES
 --------

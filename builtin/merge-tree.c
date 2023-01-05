@@ -1,8 +1,9 @@
-#define USE_THE_INDEX_COMPATIBILITY_MACROS
+#define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
 #include "tree-walk.h"
 #include "xdiff-interface.h"
 #include "help.h"
+#include "commit.h"
 #include "commit-reach.h"
 #include "merge-ort.h"
 #include "object-store.h"
@@ -98,7 +99,7 @@ static void *origin(struct merge_list *entry, unsigned long *size)
 	return NULL;
 }
 
-static int show_outf(void *priv_, mmbuffer_t *mb, int nbuf)
+static int show_outf(void *priv UNUSED, mmbuffer_t *mb, int nbuf)
 {
 	int i;
 	for (i = 0; i < nbuf; i++)
@@ -402,9 +403,11 @@ struct merge_tree_options {
 	int allow_unrelated_histories;
 	int show_messages;
 	int name_only;
+	int use_stdin;
 };
 
 static int real_merge(struct merge_tree_options *o,
+		      const char *merge_base,
 		      const char *branch1, const char *branch2,
 		      const char *prefix)
 {
@@ -412,6 +415,7 @@ static int real_merge(struct merge_tree_options *o,
 	struct commit_list *merge_bases = NULL;
 	struct merge_options opt;
 	struct merge_result result = { 0 };
+	int show_messages = o->show_messages;
 
 	parent1 = get_merge_parent(branch1);
 	if (!parent1)
@@ -430,22 +434,39 @@ static int real_merge(struct merge_tree_options *o,
 	opt.branch1 = branch1;
 	opt.branch2 = branch2;
 
-	/*
-	 * Get the merge bases, in reverse order; see comment above
-	 * merge_incore_recursive in merge-ort.h
-	 */
-	merge_bases = get_merge_bases(parent1, parent2);
-	if (!merge_bases && !o->allow_unrelated_histories)
-		die(_("refusing to merge unrelated histories"));
-	merge_bases = reverse_commit_list(merge_bases);
+	if (merge_base) {
+		struct commit *base_commit;
+		struct tree *base_tree, *parent1_tree, *parent2_tree;
 
-	merge_incore_recursive(&opt, merge_bases, parent1, parent2, &result);
+		base_commit = lookup_commit_reference_by_name(merge_base);
+		if (!base_commit)
+			die(_("could not lookup commit %s"), merge_base);
+
+		opt.ancestor = merge_base;
+		base_tree = get_commit_tree(base_commit);
+		parent1_tree = get_commit_tree(parent1);
+		parent2_tree = get_commit_tree(parent2);
+		merge_incore_nonrecursive(&opt, base_tree, parent1_tree, parent2_tree, &result);
+	} else {
+		/*
+		 * Get the merge bases, in reverse order; see comment above
+		 * merge_incore_recursive in merge-ort.h
+		 */
+		merge_bases = get_merge_bases(parent1, parent2);
+		if (!merge_bases && !o->allow_unrelated_histories)
+			die(_("refusing to merge unrelated histories"));
+		merge_bases = reverse_commit_list(merge_bases);
+		merge_incore_recursive(&opt, merge_bases, parent1, parent2, &result);
+	}
+
 	if (result.clean < 0)
 		die(_("failure to merge"));
 
-	if (o->show_messages == -1)
-		o->show_messages = !result.clean;
+	if (show_messages == -1)
+		show_messages = !result.clean;
 
+	if (o->use_stdin)
+		printf("%d%c", result.clean, line_termination);
 	printf("%s%c", oid_to_hex(&result.tree->object.oid), line_termination);
 	if (!result.clean) {
 		struct string_list conflicted_files = STRING_LIST_INIT_NODUP;
@@ -467,11 +488,13 @@ static int real_merge(struct merge_tree_options *o,
 		}
 		string_list_clear(&conflicted_files, 1);
 	}
-	if (o->show_messages) {
+	if (show_messages) {
 		putchar(line_termination);
 		merge_display_update_messages(&opt, line_termination == '\0',
 					      &result);
 	}
+	if (o->use_stdin)
+		putchar(line_termination);
 	merge_finalize(&opt, &result);
 	return !result.clean; /* result.clean < 0 handled above */
 }
@@ -481,6 +504,7 @@ int cmd_merge_tree(int argc, const char **argv, const char *prefix)
 	struct merge_tree_options o = { .show_messages = -1 };
 	int expected_remaining_argc;
 	int original_argc;
+	const char *merge_base = NULL;
 
 	const char * const merge_tree_usage[] = {
 		N_("git merge-tree [--write-tree] [<options>] <branch1> <branch2>"),
@@ -505,6 +529,14 @@ int cmd_merge_tree(int argc, const char **argv, const char *prefix)
 			   &o.allow_unrelated_histories,
 			   N_("allow merging unrelated histories"),
 			   PARSE_OPT_NONEG),
+		OPT_BOOL_F(0, "stdin",
+			   &o.use_stdin,
+			   N_("perform multiple merges, one per line of input"),
+			   PARSE_OPT_NONEG),
+		OPT_STRING(0, "merge-base",
+			   &merge_base,
+			   N_("commit"),
+			   N_("specify a merge-base for the merge")),
 		OPT_END()
 	};
 
@@ -512,6 +544,51 @@ int cmd_merge_tree(int argc, const char **argv, const char *prefix)
 	original_argc = argc - 1; /* ignoring argv[0] */
 	argc = parse_options(argc, argv, prefix, mt_options,
 			     merge_tree_usage, PARSE_OPT_STOP_AT_NON_OPTION);
+
+	/* Handle --stdin */
+	if (o.use_stdin) {
+		struct strbuf buf = STRBUF_INIT;
+
+		if (o.mode == MODE_TRIVIAL)
+			die(_("--trivial-merge is incompatible with all other options"));
+		if (merge_base)
+			die(_("--merge-base is incompatible with --stdin"));
+		line_termination = '\0';
+		while (strbuf_getline_lf(&buf, stdin) != EOF) {
+			struct strbuf **split;
+			int result;
+			const char *input_merge_base = NULL;
+
+			split = strbuf_split(&buf, ' ');
+			if (!split[0] || !split[1])
+				die(_("malformed input line: '%s'."), buf.buf);
+			strbuf_rtrim(split[0]);
+			strbuf_rtrim(split[1]);
+
+			/* parse the merge-base */
+			if (!strcmp(split[1]->buf, "--")) {
+				input_merge_base = split[0]->buf;
+			}
+
+			if (input_merge_base && split[2] && split[3] && !split[4]) {
+				strbuf_rtrim(split[2]);
+				strbuf_rtrim(split[3]);
+				result = real_merge(&o, input_merge_base, split[2]->buf, split[3]->buf, prefix);
+			} else if (!input_merge_base && !split[2]) {
+				result = real_merge(&o, NULL, split[0]->buf, split[1]->buf, prefix);
+			} else {
+				die(_("malformed input line: '%s'."), buf.buf);
+			}
+
+			if (result < 0)
+				die(_("merging cannot continue; got unclean result of %d"), result);
+			strbuf_list_free(split);
+		}
+		strbuf_release(&buf);
+		return 0;
+	}
+
+	/* Figure out which mode to use */
 	switch (o.mode) {
 	default:
 		BUG("unexpected command mode %d", o.mode);
@@ -545,7 +622,7 @@ int cmd_merge_tree(int argc, const char **argv, const char *prefix)
 
 	/* Do the relevant type of merge */
 	if (o.mode == MODE_REAL)
-		return real_merge(&o, argv[0], argv[1], prefix);
+		return real_merge(&o, merge_base, argv[0], argv[1], prefix);
 	else
 		return trivial_merge(argv[0], argv[1], argv[2]);
 }

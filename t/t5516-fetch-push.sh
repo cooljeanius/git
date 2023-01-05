@@ -200,7 +200,10 @@ test_expect_success 'push with negotiation' '
 	test_commit -C testrepo unrelated_commit &&
 	git -C testrepo config receive.hideRefs refs/remotes/origin/first_commit &&
 	test_when_finished "rm event" &&
-	GIT_TRACE2_EVENT="$(pwd)/event" git -c protocol.version=2 -c push.negotiate=1 push testrepo refs/heads/main:refs/remotes/origin/main &&
+	GIT_TRACE2_EVENT="$(pwd)/event" \
+		git -c protocol.version=2 -c push.negotiate=1 \
+		push testrepo refs/heads/main:refs/remotes/origin/main &&
+	grep \"key\":\"total_rounds\",\"value\":\"1\" event &&
 	grep_wrote 2 event # 1 commit, 1 tree
 '
 
@@ -219,12 +222,16 @@ test_expect_success 'push with negotiation proceeds anyway even if negotiation f
 test_expect_success 'push with negotiation does not attempt to fetch submodules' '
 	mk_empty submodule_upstream &&
 	test_commit -C submodule_upstream submodule_commit &&
+	test_config_global protocol.file.allow always &&
 	git submodule add ./submodule_upstream submodule &&
 	mk_empty testrepo &&
 	git push testrepo $the_first_commit:refs/remotes/origin/first_commit &&
 	test_commit -C testrepo unrelated_commit &&
 	git -C testrepo config receive.hideRefs refs/remotes/origin/first_commit &&
-	git -c submodule.recurse=true -c protocol.version=2 -c push.negotiate=1 push testrepo refs/heads/main:refs/remotes/origin/main 2>err &&
+	GIT_TRACE2_EVENT="$(pwd)/event"  git -c submodule.recurse=true \
+		-c protocol.version=2 -c push.negotiate=1 \
+		push testrepo refs/heads/main:refs/remotes/origin/main 2>err &&
+	grep \"key\":\"total_rounds\",\"value\":\"1\" event &&
 	! grep "Fetching submodule" err
 '
 
@@ -1846,55 +1853,24 @@ test_expect_success 'refuse to push a hidden ref, and make sure do not pollute t
 	test_dir_is_empty testrepo/.git/objects/pack
 '
 
-test_expect_success LIBCURL 'fetch warns or fails when using username:password' '
-	message="URL '\''https://username:<redacted>@localhost/'\'' uses plaintext credentials" &&
-	test_must_fail git -c transfer.credentialsInUrl=allow fetch https://username:password@localhost 2>err &&
-	! grep "$message" err &&
-
-	test_must_fail git -c transfer.credentialsInUrl=warn fetch https://username:password@localhost 2>err &&
-	grep "warning: $message" err >warnings &&
-	test_line_count = 3 warnings &&
-
-	test_must_fail git -c transfer.credentialsInUrl=die fetch https://username:password@localhost 2>err &&
-	grep "fatal: $message" err >warnings &&
-	test_line_count = 1 warnings &&
-
-	test_must_fail git -c transfer.credentialsInUrl=die fetch https://username:@localhost 2>err &&
-	grep "fatal: $message" err >warnings &&
-	test_line_count = 1 warnings
-'
-
-
-test_expect_success LIBCURL 'push warns or fails when using username:password' '
-	message="URL '\''https://username:<redacted>@localhost/'\'' uses plaintext credentials" &&
-	test_must_fail git -c transfer.credentialsInUrl=allow push https://username:password@localhost 2>err &&
-	! grep "$message" err &&
-
-	test_must_fail git -c transfer.credentialsInUrl=warn push https://username:password@localhost 2>err &&
-	grep "warning: $message" err >warnings &&
-	test_must_fail git -c transfer.credentialsInUrl=die push https://username:password@localhost 2>err &&
-	grep "fatal: $message" err >warnings &&
-	test_line_count = 1 warnings
-'
-
 test_expect_success 'push with config push.useBitmaps' '
 	mk_test testrepo heads/main &&
 	git checkout main &&
 	test_unconfig push.useBitmaps &&
 	GIT_TRACE2_EVENT="$PWD/default" \
-	git push testrepo main:test &&
+	git push --quiet testrepo main:test &&
 	test_subcommand git pack-objects --all-progress-implied --revs --stdout \
 		--thin --delta-base-offset -q <default &&
 
 	test_config push.useBitmaps true &&
 	GIT_TRACE2_EVENT="$PWD/true" \
-	git push testrepo main:test2 &&
+	git push --quiet testrepo main:test2 &&
 	test_subcommand git pack-objects --all-progress-implied --revs --stdout \
 		--thin --delta-base-offset -q <true &&
 
 	test_config push.useBitmaps false &&
 	GIT_TRACE2_EVENT="$PWD/false" \
-	git push testrepo main:test3 &&
+	git push --quiet testrepo main:test3 &&
 	test_subcommand git pack-objects --all-progress-implied --revs --stdout \
 		--thin --delta-base-offset -q --no-use-bitmap-index <false
 '

@@ -180,8 +180,8 @@ static inline void oe_set_delta_size(struct packing_data *pack,
 #define SET_DELTA_SIBLING(obj, val) oe_set_delta_sibling(&to_pack, obj, val)
 
 static const char *pack_usage[] = {
-	N_("git pack-objects --stdout [<options>...] [< <ref-list> | < <object-list>]"),
-	N_("git pack-objects [<options>...] <base-name> [< <ref-list> | < <object-list>]"),
+	N_("git pack-objects --stdout [<options>] [< <ref-list> | < <object-list>]"),
+	N_("git pack-objects [<options>] <base-name> [< <ref-list> | < <object-list>]"),
 	NULL
 };
 
@@ -759,8 +759,8 @@ static enum write_one_status write_one(struct hashfile *f,
 	return WRITE_ONE_WRITTEN;
 }
 
-static int mark_tagged(const char *path, const struct object_id *oid, int flag,
-		       void *cb_data)
+static int mark_tagged(const char *path UNUSED, const struct object_id *oid,
+		       int flag UNUSED, void *cb_data UNUSED)
 {
 	struct object_id peeled;
 	struct object_entry *entry = packlist_find(&to_pack, oid);
@@ -3035,7 +3035,8 @@ static void add_tag_chain(const struct object_id *oid)
 	}
 }
 
-static int add_ref_tag(const char *tag, const struct object_id *oid, int flag, void *cb_data)
+static int add_ref_tag(const char *tag UNUSED, const struct object_id *oid,
+		       int flag UNUSED, void *cb_data UNUSED)
 {
 	struct object_id peeled;
 
@@ -3148,6 +3149,14 @@ static int git_pack_config(const char *k, const char *v, void *cb)
 		else
 			write_bitmap_options &= ~BITMAP_OPT_HASH_CACHE;
 	}
+
+	if (!strcmp(k, "pack.writebitmaplookuptable")) {
+		if (git_config_bool(k, v))
+			write_bitmap_options |= BITMAP_OPT_LOOKUP_TABLE;
+		else
+			write_bitmap_options &= ~BITMAP_OPT_LOOKUP_TABLE;
+	}
+
 	if (!strcmp(k, "pack.usebitmaps")) {
 		use_bitmap_index_default = git_config_bool(k, v);
 		return 0;
@@ -3950,8 +3959,9 @@ static void record_recent_commit(struct commit *commit, void *data)
 }
 
 static int mark_bitmap_preferred_tip(const char *refname,
-				     const struct object_id *oid, int flags,
-				     void *_data)
+				     const struct object_id *oid,
+				     int flags UNUSED,
+				     void *data UNUSED)
 {
 	struct object_id peeled;
 	struct object *object;
@@ -4139,21 +4149,6 @@ static int option_parse_cruft_expiration(const struct option *opt,
 	return 0;
 }
 
-struct po_filter_data {
-	unsigned have_revs:1;
-	struct rev_info revs;
-};
-
-static struct list_objects_filter_options *po_filter_revs_init(void *value)
-{
-	struct po_filter_data *data = value;
-
-	repo_init_revisions(the_repository, &data->revs, NULL);
-	data->have_revs = 1;
-
-	return &data->revs.filter;
-}
-
 int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 {
 	int use_internal_rev_list = 0;
@@ -4164,7 +4159,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	int rev_list_index = 0;
 	int stdin_packs = 0;
 	struct string_list keep_pack_list = STRING_LIST_INIT_NODUP;
-	struct po_filter_data pfd = { .have_revs = 0 };
+	struct list_objects_filter_options filter_options =
+		LIST_OBJECTS_FILTER_INIT;
 
 	struct option pack_objects_options[] = {
 		OPT_SET_INT('q', "quiet", &progress,
@@ -4255,7 +4251,7 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 			      &write_bitmap_index,
 			      N_("write a bitmap index if possible"),
 			      WRITE_BITMAP_QUIET, PARSE_OPT_HIDDEN),
-		OPT_PARSE_LIST_OBJECTS_FILTER_INIT(&pfd, po_filter_revs_init),
+		OPT_PARSE_LIST_OBJECTS_FILTER(&filter_options),
 		OPT_CALLBACK_F(0, "missing", NULL, N_("action"),
 		  N_("handling for missing objects"), PARSE_OPT_NONEG,
 		  option_parse_missing_action),
@@ -4375,7 +4371,7 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	if (!rev_list_all || !rev_list_reflog || !rev_list_index)
 		unpack_unreachable_expiration = 0;
 
-	if (pfd.have_revs && pfd.revs.filter.choice) {
+	if (filter_options.choice) {
 		if (!pack_to_stdout)
 			die(_("cannot use --filter without --stdout"));
 		if (stdin_packs)
@@ -4462,13 +4458,11 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		read_cruft_objects();
 	} else if (!use_internal_rev_list) {
 		read_object_list_from_stdin();
-	} else if (pfd.have_revs) {
-		get_object_list(&pfd.revs, rp.nr, rp.v);
-		release_revisions(&pfd.revs);
 	} else {
 		struct rev_info revs;
 
 		repo_init_revisions(the_repository, &revs, NULL);
+		list_objects_filter_copy(&revs.filter, &filter_options);
 		get_object_list(&revs, rp.nr, rp.v);
 		release_revisions(&revs);
 	}
@@ -4503,6 +4497,7 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 			   reuse_packfile_objects);
 
 cleanup:
+	list_objects_filter_release(&filter_options);
 	strvec_clear(&rp);
 
 	return 0;

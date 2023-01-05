@@ -2,6 +2,7 @@
 
 test_description='verify safe.directory checks'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 GIT_TEST_ASSUME_DIFFERENT_OWNER=1
@@ -68,6 +69,15 @@ test_expect_success 'safe.directory=*' '
 test_expect_success 'safe.directory=*, but is reset' '
 	git config --global --add safe.directory "" &&
 	expect_rejected_dir
+'
+
+test_expect_success 'safe.directory in included file' '
+	cat >gitconfig-include <<-EOF &&
+	[safe]
+		directory = "$(pwd)"
+	EOF
+	git config --global --add include.path "$(pwd)/gitconfig-include" &&
+	git status
 '
 
 test_done

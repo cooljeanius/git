@@ -1400,6 +1400,43 @@ test_expect_success '--from omits redundant in-body header' '
 	test_cmp expect patch.head
 '
 
+test_expect_success 'with --force-in-body-from, redundant in-body from is kept' '
+	git format-patch --force-in-body-from \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'format.forceInBodyFrom, equivalent to --force-in-body-from' '
+	git -c format.forceInBodyFrom=yes format-patch \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
+test_expect_success 'format.forceInBodyFrom, equivalent to --force-in-body-from' '
+	git -c format.forceInBodyFrom=yes format-patch --no-force-in-body-from \
+		-1 --stdout --from="A U Thor <author@example.com>" >patch &&
+	cat >expect <<-\EOF &&
+	From: A U Thor <author@example.com>
+
+	EOF
+	sed -ne "/^From:/p; /^$/p; /^---$/q" patch >patch.head &&
+	test_cmp expect patch.head
+'
+
 test_expect_success 'in-body headers trigger content encoding' '
 	test_env GIT_AUTHOR_NAME="éxötìc" test_commit exotic &&
 	test_when_finished "git reset --hard HEAD^" &&
@@ -1420,7 +1457,7 @@ append_signoff()
 	C=$(git commit-tree HEAD^^{tree} -p HEAD) &&
 	git format-patch --stdout --signoff $C^..$C >append_signoff.patch &&
 	sed -n -e "1,/^---$/p" append_signoff.patch |
-		egrep -n "^Subject|Sign|^$"
+		grep -E -n "^Subject|Sign|^$"
 }
 
 test_expect_success 'signoff: commit with no body' '
@@ -2237,14 +2274,14 @@ test_expect_success 'format-patch --base with --attach' '
 test_expect_success 'format-patch --attach cover-letter only is non-multipart' '
 	test_when_finished "rm -fr patches" &&
 	git format-patch -o patches --cover-letter --attach=mimemime --base=HEAD~ -1 &&
-	! egrep "^--+mimemime" patches/0000*.patch &&
-	egrep "^--+mimemime$" patches/0001*.patch >output &&
+	! grep -E "^--+mimemime" patches/0000*.patch &&
+	grep -E "^--+mimemime$" patches/0001*.patch >output &&
 	test_line_count = 2 output &&
-	egrep "^--+mimemime--$" patches/0001*.patch >output &&
+	grep -E "^--+mimemime--$" patches/0001*.patch >output &&
 	test_line_count = 1 output
 '
 
-test_expect_success 'format-patch --pretty=mboxrd' '
+test_expect_success '-c format.mboxrd format-patch' '
 	sp=" " &&
 	cat >msg <<-INPUT_END &&
 	mboxrd should escape the body
@@ -2279,7 +2316,9 @@ test_expect_success 'format-patch --pretty=mboxrd' '
 	INPUT_END
 
 	C=$(git commit-tree HEAD^^{tree} -p HEAD <msg) &&
-	git format-patch --pretty=mboxrd --stdout -1 $C~1..$C >patch &&
+	git -c format.mboxrd format-patch --stdout -1 $C~1..$C >patch &&
+	git format-patch --pretty=mboxrd --stdout -1 $C~1..$C >compat &&
+	test_cmp patch compat &&
 	git grep -h --no-index -A11 \
 		"^>From could trip up a loose mbox parser" patch >actual &&
 	test_cmp expect actual
