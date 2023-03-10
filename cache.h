@@ -360,6 +360,22 @@ struct index_state {
 	struct pattern_list *sparse_checkout_patterns;
 };
 
+/**
+ * A "struct index_state istate" must be initialized with
+ * INDEX_STATE_INIT or the corresponding index_state_init().
+ *
+ * If the variable won't be used again, use release_index() to free()
+ * its resources. If it needs to be used again use discard_index(),
+ * which does the same thing, but will use use index_state_init() at
+ * the end. The discard_index() will use its own "istate->repo" as the
+ * "r" argument to index_state_init() in that case.
+ */
+#define INDEX_STATE_INIT(r) { \
+	.repo = (r), \
+}
+void index_state_init(struct index_state *istate, struct repository *r);
+void release_index(struct index_state *istate);
+
 /* Name hashing */
 int test_lazy_init_name_hash(struct index_state *istate, int try_threaded);
 void add_name_hash(struct index_state *istate, struct cache_entry *ce);
@@ -433,18 +449,8 @@ typedef int (*must_prefetch_predicate)(const struct cache_entry *);
 void prefetch_cache_entries(const struct index_state *istate,
 			    must_prefetch_predicate must_prefetch);
 
-#if defined(USE_THE_INDEX_COMPATIBILITY_MACROS) || defined(USE_THE_INDEX_VARIABLE)
+#ifdef USE_THE_INDEX_VARIABLE
 extern struct index_state the_index;
-
-#ifndef USE_THE_INDEX_VARIABLE
-#ifdef USE_THE_INDEX_COMPATIBILITY_MACROS
-#define active_nr (the_index.cache_nr)
-
-#define read_cache() repo_read_index(the_repository)
-#define discard_cache() discard_index(&the_index)
-#define cache_name_pos(name, namelen) index_name_pos(&the_index,(name),(namelen))
-#endif
-#endif
 #endif
 
 #define TYPE_BITS 3
@@ -1607,8 +1613,10 @@ int repo_interpret_branch_name(struct repository *r,
 
 int validate_headref(const char *ref);
 
-int base_name_compare(const char *name1, int len1, int mode1, const char *name2, int len2, int mode2);
-int df_name_compare(const char *name1, int len1, int mode1, const char *name2, int len2, int mode2);
+int base_name_compare(const char *name1, size_t len1, int mode1,
+		      const char *name2, size_t len2, int mode2);
+int df_name_compare(const char *name1, size_t len1, int mode1,
+		    const char *name2, size_t len2, int mode2);
 int name_compare(const char *name1, size_t len1, const char *name2, size_t len2);
 int cache_name_stage_compare(const char *name1, int len1, int stage1, const char *name2, int len2, int stage2);
 

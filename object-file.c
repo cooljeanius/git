@@ -33,6 +33,7 @@
 #include "object-store.h"
 #include "promisor-remote.h"
 #include "submodule.h"
+#include "fsck.h"
 
 /* The maximum size for an object header. */
 #define MAX_HEADER_LEN 32
@@ -1671,23 +1672,6 @@ int oid_object_info(struct repository *r,
 	return type;
 }
 
-static void *read_object(struct repository *r,
-			 const struct object_id *oid, enum object_type *type,
-			 unsigned long *size,
-			 int die_if_corrupt)
-{
-	struct object_info oi = OBJECT_INFO_INIT;
-	void *content;
-	oi.typep = type;
-	oi.sizep = size;
-	oi.contentp = &content;
-
-	if (oid_object_info_extended(r, oid, &oi, die_if_corrupt
-				     ? OBJECT_INFO_DIE_IF_CORRUPT : 0) < 0)
-		return NULL;
-	return content;
-}
-
 int pretend_object_file(void *buf, unsigned long len, enum object_type type,
 			struct object_id *oid)
 {
@@ -1709,25 +1693,25 @@ int pretend_object_file(void *buf, unsigned long len, enum object_type type,
 
 /*
  * This function dies on corrupt objects; the callers who want to
- * deal with them should arrange to call read_object() and give error
- * messages themselves.
+ * deal with them should arrange to call oid_object_info_extended() and give
+ * error messages themselves.
  */
-void *read_object_file_extended(struct repository *r,
-				const struct object_id *oid,
-				enum object_type *type,
-				unsigned long *size,
-				int lookup_replace)
+void *repo_read_object_file(struct repository *r,
+			    const struct object_id *oid,
+			    enum object_type *type,
+			    unsigned long *size)
 {
+	struct object_info oi = OBJECT_INFO_INIT;
+	unsigned flags = OBJECT_INFO_DIE_IF_CORRUPT | OBJECT_INFO_LOOKUP_REPLACE;
 	void *data;
-	const struct object_id *repl = lookup_replace ?
-		lookup_replace_object(r, oid) : oid;
 
-	errno = 0;
-	data = read_object(r, repl, type, size, 1);
-	if (data)
-		return data;
+	oi.typep = type;
+	oi.sizep = size;
+	oi.contentp = &data;
+	if (oid_object_info_extended(r, oid, &oi, flags))
+		return NULL;
 
-	return NULL;
+	return data;
 }
 
 void *read_object_with_reference(struct repository *r,
@@ -2255,6 +2239,7 @@ int force_object_loose(const struct object_id *oid, time_t mtime)
 {
 	void *buf;
 	unsigned long len;
+	struct object_info oi = OBJECT_INFO_INIT;
 	enum object_type type;
 	char hdr[MAX_HEADER_LEN];
 	int hdrlen;
@@ -2262,8 +2247,10 @@ int force_object_loose(const struct object_id *oid, time_t mtime)
 
 	if (has_loose_object(oid))
 		return 0;
-	buf = read_object(the_repository, oid, &type, &len, 0);
-	if (!buf)
+	oi.typep = &type;
+	oi.sizep = &len;
+	oi.contentp = &buf;
+	if (oid_object_info_extended(the_repository, oid, &oi, 0))
 		return error(_("cannot read object for %s"), oid_to_hex(oid));
 	hdrlen = format_object_header(hdr, sizeof(hdr), type, len);
 	ret = write_loose_object(oid, hdr, hdrlen, buf, len, mtime, 0);
@@ -2298,32 +2285,21 @@ int repo_has_object_file(struct repository *r,
 	return repo_has_object_file_with_flags(r, oid, 0);
 }
 
-static void check_tree(const void *buf, size_t size)
+/*
+ * We can't use the normal fsck_error_function() for index_mem(),
+ * because we don't yet have a valid oid for it to report. Instead,
+ * report the minimal fsck error here, and rely on the caller to
+ * give more context.
+ */
+static int hash_format_check_report(struct fsck_options *opts,
+				     const struct object_id *oid,
+				     enum object_type object_type,
+				     enum fsck_msg_type msg_type,
+				     enum fsck_msg_id msg_id,
+				     const char *message)
 {
-	struct tree_desc desc;
-	struct name_entry entry;
-
-	init_tree_desc(&desc, buf, size);
-	while (tree_entry(&desc, &entry))
-		/* do nothing
-		 * tree_entry() will die() on malformed entries */
-		;
-}
-
-static void check_commit(const void *buf, size_t size)
-{
-	struct commit c;
-	memset(&c, 0, sizeof(c));
-	if (parse_commit_buffer(the_repository, &c, buf, size, 0))
-		die(_("corrupt commit"));
-}
-
-static void check_tag(const void *buf, size_t size)
-{
-	struct tag t;
-	memset(&t, 0, sizeof(t));
-	if (parse_tag_buffer(the_repository, &t, buf, size))
-		die(_("corrupt tag"));
+	error(_("object fails fsck: %s"), message);
+	return 1;
 }
 
 static int index_mem(struct index_state *istate,
@@ -2350,12 +2326,13 @@ static int index_mem(struct index_state *istate,
 		}
 	}
 	if (flags & HASH_FORMAT_CHECK) {
-		if (type == OBJ_TREE)
-			check_tree(buf, size);
-		if (type == OBJ_COMMIT)
-			check_commit(buf, size);
-		if (type == OBJ_TAG)
-			check_tag(buf, size);
+		struct fsck_options opts = FSCK_OPTIONS_DEFAULT;
+
+		opts.strict = 1;
+		opts.error_func = hash_format_check_report;
+		if (fsck_buffer(null_oid(), type, buf, size, &opts))
+			die(_("refusing to create malformed object"));
+		fsck_finish(&opts);
 	}
 
 	if (write_object)
