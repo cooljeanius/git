@@ -630,7 +630,7 @@ test_expect_success 'detect incorrect generation number' '
 
 test_expect_success 'detect incorrect generation number' '
 	corrupt_graph_and_verify $GRAPH_BYTE_COMMIT_GENERATION "\01" \
-		"non-zero generation number"
+		"commit-graph generation for commit"
 '
 
 test_expect_success 'detect incorrect commit date' '
@@ -682,6 +682,16 @@ test_expect_success 'git fsck (checks commit-graph when config unset)' '
 	test_unconfig core.commitGraph &&
 	cp commit-graph-pre-write-test $objdir/info/commit-graph &&
 	test_must_fail git fsck
+'
+
+test_expect_success 'git fsck shows commit-graph output with --progress' '
+	git -C "$TRASH_DIRECTORY/full" fsck --progress 2>err &&
+	grep "Verifying commits in commit graph" err
+'
+
+test_expect_success 'git fsck suppresses commit-graph output with --no-progress' '
+	git -C "$TRASH_DIRECTORY/full" fsck --no-progress 2>err &&
+	! grep "Verifying commits in commit graph" err
 '
 
 test_expect_success 'setup non-the_repository tests' '
