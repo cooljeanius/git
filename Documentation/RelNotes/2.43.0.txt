@@ -1,0 +1,81 @@
+Git v2.43 Release Notes
+=======================
+
+UI, Workflows & Features
+
+ * A message written in olden time prevented a branch from getting
+   checked out saying it is already checked out elsewhere, but these
+   days, we treat a branch that is being bisected or rebased just like
+   a branch that is checked out and protect it.  Rephrase the message
+   to say that the branch is in use.
+
+ * Hourly and other schedule of "git maintenance" jobs are randomly
+   distributed now.
+
+ * "git cmd -h" learned to signal which options can be negated by
+   listing such options like "--[no-]opt".
+
+ * The way authentication related data other than passwords (e.g.
+   oath token and password expiration data) are stored in libsecret
+   keyrings has been rethought.
+
+ * Update two credential helpers to correctly match which credential
+   to erase; they dropped not the ones with stale password.
+
+ * Git GUI updates.
+
+ * "git format-patch" learns a way to feed cover letter description,
+   that (1) can be used on detached HEAD where there is no branch
+   description available, and (2) also can override the branch
+   description if there is one.
+
+
+Performance, Internal Implementation, Development Support etc.
+
+ * "git check-attr" has been taught to work better with sparse-index.
+
+
+
+Fixes since v2.42
+-----------------
+
+ * Overly long label names used in the sequencer machinery are now
+   chopped to fit under filesystem limitation.
+   (merge ac300bda10 mp/rebase-label-length-limit later to maint).
+
+ * Scalar updates.
+   (merge f9a547d3a7 ds/scalar-updates later to maint).
+
+ * Tweak GitHub Actions CI so that pushing the same commit to multiple
+   branch tips at the same time will not waste building and testing
+   the same thing twice.
+   (merge 99fe06cbfd jc/ci-skip-same-commit later to maint).
+
+ * The commit-graph verification code that detects mixture of zero and
+   non-zero generation numbers has been updated.
+   (merge db6044d762 tb/commit-graph-verify-fix later to maint).
+
+ * "git diff -w --exit-code" with various options did not work
+   correctly, which is being addressed.
+   (merge a64f8b2595 jc/diff-exit-code-with-w-fixes later to maint).
+
+ * transfer.unpackLimit ought to be used as a fallback, but overrode
+   fetch.unpackLimit and receive.unpackLimit instead.
+   (merge f3d33f8cfe ts/unpacklimit-config-fix later to maint).
+
+ * The use of API between two calls to require_clean_work_tree() from
+   the sequencer code has been cleaned up for consistency.
+   (merge a9b5955e07 ob/sequencer-empty-hint-fix later to maint).
+
+ * "git diff --no-such-option" and other corner cases around the exit
+   status of the "diff" command has been corrected.
+   (merge 5cc6b2d70b jk/diff-result-code-cleanup later to maint).
+
+ * Other code cleanup, docfix, build fix, etc.
+   (merge fd3ba590d8 ws/git-push-doc-grammofix later to maint).
+   (merge 5f33a843de ds/upload-pack-error-sequence-fix later to maint).
+   (merge beaa1d952b jk/function-pointer-mismatches-fix later to maint).
+   (merge b46d806ea5 ob/t9001-indent-fix later to maint).
+   (merge fdc9914c28 ja/worktree-orphan later to maint).
+   (merge c2cbefc510 jc/mv-d-to-d-error-message-fix later to maint).
+   (merge d0fc552bfc ch/t6300-verify-commit-test-cleanup later to maint).
