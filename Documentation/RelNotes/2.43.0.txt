@@ -1,6 +1,16 @@
 Git v2.43 Release Notes
 =======================
 
+Backward Compatibility Notes
+
+ * The "--rfc" option of "git format-patch" used to be a valid way to
+   override an earlier "--subject-prefix=<something>" on the command
+   line and replace it with "[RFC PATCH]", but from this release, it
+   merely prefixes the string "RFC " in front of the given subject
+   prefix.  If you are negatively affected by this change, please use
+   "--subject-prefix=PATCH --rfc" as a replacement.
+
+
 UI, Workflows & Features
 
  * A message written in olden time prevented a branch from getting
@@ -29,11 +39,38 @@ UI, Workflows & Features
    description available, and (2) also can override the branch
    description if there is one.
 
+ * Use of --max-pack-size to allow multiple packfiles to be created is
+   now supported even when we are sending unreachable objects to cruft
+   packs.
+
+ * "git format-patch --rfc --subject-prefix=<foo>" used to ignore the
+   "--subject-prefix" option and used "[RFC PATCH]"; now we will add
+   "RFC" prefix to whatever subject prefix is specified.
+
 
 Performance, Internal Implementation, Development Support etc.
 
  * "git check-attr" has been taught to work better with sparse-index.
 
+ * It may be tempting to leave the help text NULL for a command line
+   option that is either hidden or too obvious, but "git subcmd -h"
+   and "git subcmd --help-all" would have segfaulted if done so.  Now
+   the help text is optional.
+
+ * Tests that are known to pass with LSan are now marked as such.
+   (merge 5fafe8c95f tb/mark-more-tests-as-leak-free later to maint).
+
+ * Flakey "git p4" tests, as well as "git svn" tests, are now skipped
+   in the (rather expensive) sanitizer CI job.
+   (merge 6ba913629f js/ci-san-skip-p4-and-svn-tests later to maint).
+
+ * Tests with LSan from time to time seem to emit harmless message
+   that makes our tests unnecessarily flakey; we work it around by
+   filtering the uninteresting output.
+   (merge 370ef7e40d jk/test-lsan-denoise-output later to maint).
+
+ * Unused parameters to functions are marked as such, and/or removed,
+   in order to bring us closer to -Wunused-parameter clean.
 
 
 Fixes since v2.42
@@ -79,3 +116,5 @@ Fixes since v2.42
    (merge fdc9914c28 ja/worktree-orphan later to maint).
    (merge c2cbefc510 jc/mv-d-to-d-error-message-fix later to maint).
    (merge d0fc552bfc ch/t6300-verify-commit-test-cleanup later to maint).
+   (merge aa4b83dd5e ws/git-svn-retire-faketerm later to maint).
+   (merge edf80d23f1 jk/ci-retire-allow-ref later to maint).
