@@ -333,7 +333,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       if: matrix.vector.jobname != 'linux32'
-    - uses: actions/checkout@v1 # @dependabot: ignore
+    - uses: actions/checkout@v4 # @dependabot: ignore
       if: matrix.vector.jobname == 'linux32'
     - run: ci/install-docker-dependencies.sh
     - run: ci/run-build-and-tests.sh
