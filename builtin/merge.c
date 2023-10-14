@@ -466,9 +466,7 @@ static void finish(struct commit *head_commit,
 	if (new_head && show_diffstat) {
 		struct diff_options opts;
 		repo_diff_setup(the_repository, &opts);
-		opts.stat_width = -1; /* use full terminal width */
-		opts.stat_name_width = -1; /* respect statNameWidth config */
-		opts.stat_graph_width = -1; /* respect statGraphWidth config */
+		init_diffstat_widths(&opts);
 		opts.output_format |=
 			DIFF_FORMAT_SUMMARY | DIFF_FORMAT_DIFFSTAT;
 		opts.detect_rename = DIFF_DETECT_RENAME;
@@ -1634,6 +1632,7 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 
 		for (j = remoteheads; j; j = j->next) {
 			struct commit_list *common_one;
+			struct commit *common_item;
 
 			/*
 			 * Here we *have* to calculate the individual
@@ -1643,7 +1642,9 @@ int cmd_merge(int argc, const char **argv, const char *prefix)
 			common_one = repo_get_merge_bases(the_repository,
 							  head_commit,
 							  j->item);
-			if (!oideq(&common_one->item->object.oid, &j->item->object.oid)) {
+			common_item = common_one->item;
+			free_commit_list(common_one);
+			if (!oideq(&common_item->object.oid, &j->item->object.oid)) {
 				up_to_date = 0;
 				break;
 			}
