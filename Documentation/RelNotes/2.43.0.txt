@@ -92,6 +92,12 @@ UI, Workflows & Features
  * "git merge-tree" learned to take strategy backend specific options
    via the "-X" option, like "git merge" does.
 
+ * "git log" and friends learned "--dd" that is a short-hand for
+   "--diff-merges=first-parent -p".
+
+ * The attribute subsystem learned to honor `attr.tree` configuration
+   that specifies which tree to read the .gitattributes files from.
+
 
 Performance, Internal Implementation, Development Support etc.
 
@@ -132,6 +138,9 @@ Performance, Internal Implementation, Development Support etc.
  * The code to iterate over loose references have been optimized to
    reduce the number of lstat() system calls.
    (merge 2cdb796101 vd/loose-ref-iteration-optimization later to maint).
+
+ * The codepaths that read "chunk" formatted files have been corrected
+   to pay attention to the chunk size and notice broken files.
 
 
 Fixes since v2.42
@@ -261,6 +270,26 @@ Fixes since v2.42
    not auto-initialize the decoration subsystem, which has been
    corrected.
 
+ * Feeding "git stash store" with a random commit that was not created
+   by "git stash create" now errors out.
+   (merge d9b6634589 jc/fail-stash-to-store-non-stash later to maint).
+
+ * The index file has room only for lower 32-bit of the file size in
+   the cached stat information, which means cached stat information
+   will have 0 in its sd_size member for a file whose size is multiple
+   of 4GiB.  This is mistaken for a racily clean path.  Avoid it by
+   storing a bogus sd_size value instead for such files.
+   (merge 5143ac07b1 bc/racy-4gb-files later to maint).
+
+ * "git p4" tried to store symlinks to LFS when told, but has been
+   fixed not to do so, because it does not make sense.
+   (merge 10c89a02b0 mm/p4-symlink-with-lfs later to maint).
+
+ * The codepath to handle recipient addresses `git send-email
+   --compose` learns from the user was completely broken, which has
+   been corrected.
+   (merge 3ec6167567 jk/send-email-fix-addresses-from-composed-messages later to maint).
+
  * Other code cleanup, docfix, build fix, etc.
    (merge fd3ba590d8 ws/git-push-doc-grammofix later to maint).
    (merge 5f33a843de ds/upload-pack-error-sequence-fix later to maint).
@@ -286,3 +315,10 @@ Fixes since v2.42
    (merge badf2fe1c3 jk/decoration-and-other-leak-fixes later to maint).
    (merge cebfaaa333 sn/cat-file-doc-update later to maint).
    (merge 8b3aa36f5a ps/rewritten-is-per-worktree-doc later to maint).
+   (merge ffbf6a748d jc/update-list-references-to-lore later to maint).
+   (merge 14d569b1a7 jc/am-doc-whitespace-action-fix later to maint).
+   (merge 48399e9cf0 ni/die-message-fix-for-git-add later to maint).
+   (merge ca3285dd69 ps/git-repack-doc-fixes later to maint).
+   (merge 243c79fdc7 wx/merge-ort-comment-typofix later to maint).
+   (merge a060705d94 jc/commit-new-underscore-index-fix later to maint).
+   (merge f6d83e2115 ms/doc-push-fix later to maint).
