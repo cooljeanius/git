@@ -69,8 +69,8 @@ jobs:
         # queries: security-extended,security-and-quality
 
     - name: Dependencies
-      run: sudo apt-get -qq update && sudo apt-get install gettext curl binutils diffutils asciidoc
-
+      if: matrix.language == 'c-cpp'
+      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc shellcheck
 
     # Autobuild attempts to build any compiled languages (C/C++, C#, Go, Java, or Swift).
     # If this step fails, then you should remove it and run the build manually (see below)
