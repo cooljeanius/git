@@ -70,7 +70,7 @@ jobs:
 
     - name: Dependencies
       if: matrix.language == 'c-cpp'
-      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc libcurl4-openssl-dev libbsd-dev libsecret-1-dev  libdispatch-dev
+      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc libcurl4-openssl-dev libbsd-dev libsecret-1-0 libsecret-tools gir1.2-secret-1 libsecret-common libdispatch-dev
 
     # Autobuild attempts to build any compiled languages (C/C++, C#, Go, Java, or Swift).
     - name: Autobuild
@@ -86,7 +86,12 @@ jobs:
             echo "gcc -c -w -Wno-error -Wfatal-errors \"${cfile}\""; \
             gcc -c -w -Wno-error -Wfatal-errors "${cfile}" || stat -t "${cfile}" || echo "cfile is ${cfile}"; \
           else \
-            echo "object file ${cobjfile} already exists for ${cfile}."; \
+            test -d . || (echo "broken working directory!" >&2 && exit 1); \
+            if test "${V}" -ge 1; then \
+              echo "object file ${cobjfile} already exists for ${cfile}."; \
+            else \
+              printf "."; \
+            fi; \
             (if test "$(dirname "${cfile}")" != "."; then cp -v "${cobjfile}" "$(dirname "${cfile}")"; fi) || (if test "$(dirname "${cobjfile}")" != "."; then cp -v "${cobjfile}" .; fi) || cp -v "${cobjfile}" .. || (if test -d /tmp && test -w /tmp; then cp -v "${cobjfile}" /tmp; fi) || stat -t "${cobjfile}"; \
           fi; \
         done
