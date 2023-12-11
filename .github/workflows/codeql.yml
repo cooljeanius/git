@@ -69,7 +69,7 @@ jobs:
         # queries: security-extended,security-and-quality
 
     - name: Dependencies
-      run: sudo apt-get -qq update && sudo apt-get install gettext curl binutils diffutils asciidoc gnutar
+      run: sudo apt-get -qq update && sudo apt-get install gettext curl binutils diffutils asciidoc
 
 
     # Autobuild attempts to build any compiled languages (C/C++, C#, Go, Java, or Swift).
