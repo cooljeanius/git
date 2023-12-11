@@ -255,6 +255,7 @@ jobs:
   regular:
     name: ${{matrix.vector.jobname}} (${{matrix.vector.pool}})
     needs: ci-config
+    timeout-minutes: 420
     if: needs.ci-config.outputs.enabled == 'yes'
     concurrency:
       group: ${{ matrix.vector.jobname }}-${{ matrix.vector.pool }}-${{ github.ref }}
