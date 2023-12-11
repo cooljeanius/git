@@ -87,7 +87,7 @@ jobs:
             gcc -c -w -Wno-error -Wfatal-errors "${cfile}" || stat -t "${cfile}" || echo "cfile is ${cfile}"; \
           else \
             test -d . || (echo "broken working directory!" >&2 && exit 1); \
-            if test "${V}" -ge 1; then \
+            if test -n "${V}" && test "${V}" -ge 1; then \
               echo "object file ${cobjfile} already exists for ${cfile}."; \
             else \
               printf "."; \
