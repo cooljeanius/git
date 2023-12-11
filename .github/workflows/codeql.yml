@@ -83,8 +83,8 @@ jobs:
         for cfile in $(find . -name '*.c' -type f); do \
           cobjfile="$(echo "${cfile}" | sed "s/\.c/.o/g")"; \
           if test ! -e "${cobjfile}"; then \
-            echo "gcc -c -w \"${cfile}\""; \
-            gcc -c -w "${cfile}" || stat -t "${cfile}" || echo "cfile is ${cfile}"; \
+            echo "gcc -c -w -Wno-error -Wfatal-errors \"${cfile}\""; \
+            gcc -c -w -Wno-error -Wfatal-errors "${cfile}" || stat -t "${cfile}" || echo "cfile is ${cfile}"; \
           else \
             echo "object file ${cobjfile} already exists for ${cfile}."; \
             cp -v "${cobjfile}" "$(dirname "${cfile}")" || cp -v "${cobjfile}" . || cp -v "${cobjfile}" .. || (if test -d /tmp && test -w /tmp; then cp -v "${cobjfile}" /tmp; fi) || stat -t "${cobjfile}"; \
