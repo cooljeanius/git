@@ -70,7 +70,7 @@ jobs:
 
     - name: Dependencies
       if: matrix.language == 'c-cpp'
-      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc libcurl4-openssl-dev libbsd-dev libsecret-1-0 libsecret-tools gir1.2-secret-1 libsecret-common libdispatch-dev libglib2.0-0-dev libglibmm-2.4-dev libglib-testing-0-dev
+      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc libcurl4-openssl-dev libbsd-dev libsecret-1-0 libsecret-tools gir1.2-secret-1 libsecret-common libdispatch-dev libglibmm-2.4-dev libglib-testing-0-dev
 
     # Autobuild attempts to build any compiled languages (C/C++, C#, Go, Java, or Swift).
     - name: Autobuild
