@@ -70,7 +70,7 @@ jobs:
 
     - name: Dependencies
       if: matrix.language == 'c-cpp'
-      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc libcurl4-openssl-dev libbsd-dev libsecret-1-0 libsecret-tools gir1.2-secret-1 libsecret-common libdispatch-dev libglibmm-2.4-dev libglib-testing-0-dev
+      run: sudo apt-get -qq update && sudo apt-get -q install gettext curl binutils asciidoc libcurl4-openssl-dev libbsd-dev libsecret-1-0 libsecret-tools gir1.2-secret-1 libsecret-common libdispatch-dev libglib2.0-dev libglibmm-2.4-dev libglib-testing-0-dev
 
     # Autobuild attempts to build any compiled languages (C/C++, C#, Go, Java, or Swift).
     - name: Autobuild
@@ -83,7 +83,7 @@ jobs:
         for cfile in $(find . -name '*.c' -type f); do \
           cobjfile="$(echo "${cfile}" | sed "s/\.c/.o/g")"; \
           if test ! -e "${cobjfile}"; then \
-            echo "gcc -c -w -Wno-error -Wfatal-errors \"${cfile}\""; \
+            echo "." && echo "gcc -c -w -Wno-error -Wfatal-errors \"${cfile}\""; \
             gcc -c -w -Wno-error -Wfatal-errors "${cfile}" || stat -t "${cfile}" || echo "cfile is ${cfile}"; \
           else \
             test -d . || (echo "broken working directory!" >&2 && exit 1); \
