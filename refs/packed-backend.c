@@ -1,5 +1,4 @@
 #include "../git-compat-util.h"
-#include "../alloc.h"
 #include "../config.h"
 #include "../gettext.h"
 #include "../hash.h"
@@ -1705,7 +1704,6 @@ static struct ref_iterator *packed_reflog_iterator_begin(struct ref_store *ref_s
 }
 
 struct ref_storage_be refs_be_packed = {
-	.next = NULL,
 	.name = "packed",
 	.init = packed_ref_store_create,
 	.init_db = packed_init_db,
