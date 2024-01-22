@@ -1,5 +1,4 @@
 #include "../git-compat-util.h"
-#include "../config.h"
 #include "../copy.h"
 #include "../environment.h"
 #include "../gettext.h"
@@ -19,7 +18,6 @@
 #include "../dir.h"
 #include "../chdir-notify.h"
 #include "../setup.h"
-#include "../worktree.h"
 #include "../wrapper.h"
 #include "../write-or-die.h"
 #include "../revision.h"
@@ -3241,7 +3239,6 @@ static int files_init_db(struct ref_store *ref_store, struct strbuf *err UNUSED)
 }
 
 struct ref_storage_be refs_be_files = {
-	.next = NULL,
 	.name = "files",
 	.init = files_ref_store_create,
 	.init_db = files_init_db,
