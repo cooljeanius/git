@@ -137,6 +137,9 @@ __git_eread ()
 __git_pseudoref_exists ()
 {
 	local ref=$1
+	local head
+
+	__git_find_repo_path
 
 	# If the reftable is in use, we have to shell out to 'git rev-parse'
 	# to determine whether the ref exists instead of looking directly in
@@ -144,9 +147,8 @@ __git_pseudoref_exists ()
 	# Bash builtins since executing Git commands are expensive on some
 	# platforms.
 	if __git_eread "$__git_repo_path/HEAD" head; then
-		b="${head#ref: }"
-		if [ "$b" == "refs/heads/.invalid" ]; then
-			__git -C "$__git_repo_path" rev-parse --verify --quiet "$ref" 2>/dev/null
+		if [ "$head" == "ref: refs/heads/.invalid" ]; then
+			__git show-ref --exists "$ref"
 			return $?
 		fi
 	fi
@@ -1656,7 +1658,6 @@ __git_cherry_pick_inprogress_options=$__git_sequencer_inprogress_options
 
 _git_cherry_pick ()
 {
-	__git_find_repo_path
 	if __git_pseudoref_exists CHERRY_PICK_HEAD; then
 		__gitcomp "$__git_cherry_pick_inprogress_options"
 		return
@@ -1807,7 +1808,7 @@ __git_diff_common_options="--stat --numstat --shortstat --summary
 			--output= --output-indicator-context=
 			--output-indicator-new= --output-indicator-old=
 			--ws-error-highlight=
-			--pickaxe-all --pickaxe-regex
+			--pickaxe-all --pickaxe-regex --patch-with-raw
 "
 
 # Options for diff/difftool
@@ -2071,6 +2072,16 @@ __git_log_common_options="
 	--min-age= --until= --before=
 	--min-parents= --max-parents=
 	--no-min-parents --no-max-parents
+	--alternate-refs --ancestry-path
+	--author-date-order --basic-regexp
+	--bisect --boundary --exclude-first-parent-only
+	--exclude-hidden --extended-regexp
+	--fixed-strings --grep-reflog
+	--ignore-missing --left-only --perl-regexp
+	--reflog --regexp-ignore-case --remove-empty
+	--right-only --show-linear-break
+	--show-notes-by-default --show-pulls
+	--since-as-filter --single-worktree
 "
 # Options that go well for log and gitk (not shortlog)
 __git_log_gitk_options="
@@ -2086,6 +2097,7 @@ __git_log_shortlog_options="
 # Options accepted by log and show
 __git_log_show_options="
 	--diff-merges --diff-merges= --no-diff-merges --dd --remerge-diff
+	--encoding=
 "
 
 __git_diff_merges_opts="off none on first-parent 1 separate m combined c dense-combined cc remerge r"
@@ -2169,6 +2181,8 @@ _git_log ()
 			--no-walk --no-walk= --do-walk
 			--parents --children
 			--expand-tabs --expand-tabs= --no-expand-tabs
+			--clear-decorations --decorate-refs=
+			--decorate-refs-exclude=
 			$merge
 			$__git_diff_common_options
 			"
@@ -2966,7 +2980,6 @@ _git_reset ()
 
 _git_restore ()
 {
-	__git_find_repo_path
 	case "$prev" in
 	-s)
 		__git_complete_refs
@@ -2995,7 +3008,6 @@ __git_revert_inprogress_options=$__git_sequencer_inprogress_options
 
 _git_revert ()
 {
-	__git_find_repo_path
 	if __git_pseudoref_exists REVERT_HEAD; then
 		__gitcomp "$__git_revert_inprogress_options"
 		return

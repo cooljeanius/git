@@ -46,6 +46,41 @@ UI, Workflows & Features
    and domain in the error message when we barf on mismatch between
    the Git directory and the current user on Windows.
 
+ * The error message given when "git branch -d branch" fails due to
+   commits unique to the branch has been split into an error and a new
+   conditional advice message.
+
+ * When given an existing but unreadable file as a configuration file,
+   gitweb behaved as if the file did not exist at all, but now it
+   errors out.  This is a change that may break backward compatibility.
+
+ * When $HOME/.gitignore is missing but XDG config file available, we
+   should write into the latter, not former.  "git gc" and "git
+   maintenance" wrote into a wrong "global config" file, which have
+   been corrected.
+
+ * Define "special ref" as a very narrow set that consists of
+   FETCH_HEAD and MERGE_HEAD, and clarify everything else that used to
+   be classified as such are actually just pseudorefs.
+
+ * All conditional "advice" messages show how to turn them off, which
+   becomes repetitive.  Setting advice.* configuration explicitly on
+   now omits the instruction part.
+
+ * The "disable repository discovery of a bare repository" check,
+   triggered by setting safe.bareRepository configuration variable to
+   'explicit', has been loosened to exclude the ".git/" directory inside
+   a non-bare repository from the check.  So you can do "cd .git &&
+   git cmd" to run a Git command that works on a bare repository without
+   explicitly specifying $GIT_DIR now.
+
+ * The completion script (in contrib/) learned more options that can
+   be used with "git log".
+
+ * The labels on conflict markers for the common ancestor, our version,
+   and the other version are available to custom 3-way merge driver
+   via %S, %X, and %Y placeholders.
+
 
 Performance, Internal Implementation, Development Support etc.
 
@@ -79,6 +114,25 @@ Performance, Internal Implementation, Development Support etc.
  * Streaming spans of packfile data used to be done only from a
    single, primary, pack in a repository with multiple packfiles.  It
    has been extended to allow reuse from other packfiles, too.
+
+ * Comment updates to help developers not to attempt to modify
+   messages from plumbing commands that must stay constant.
+
+   It might make sense to reassess the plumbing needs every few years,
+   but that should be done as a separate effort.
+
+ * Move test-ctype helper to the unit-test framework.
+
+ * Instead of manually creating refs/ hierarchy on disk upon a
+   creation of a secondary worktree, which is only usable via the
+   files backend, use the refs API to populate it.
+
+ * CI for GitLab learned to drive macOS jobs.
+
+ * A few tests to "git commit -o <pathspec>" and "git commit -i
+   <pathspec>" has been added.
+
+ * Tests on ref API are moved around to prepare for reftable.
 
 
 Fixes since v2.43
@@ -181,6 +235,36 @@ Fixes since v2.43
    data from commit-graph too early, which has been corrected.
    (merge d70f554cdf jk/commit-graph-slab-clear-fix later to maint).
 
+ * Update to a new feature recently added, "git show-ref --exists".
+   (merge 0aabeaa562 tc/show-ref-exists-fix later to maint).
+
+ * oss-fuzz tests are built and run in CI.
+   (merge c4a9cf1df3 js/oss-fuzz-build-in-ci later to maint).
+
+ * Rename detection logic ignored the final line of a file if it is an
+   incomplete line.
+   (merge 1c5bc6971e en/diffcore-delta-final-line-fix later to maint).
+
+ * GitHub CI update.
+   (merge 0188b2c8e0 pb/ci-github-skip-logs-for-broken-tests later to maint).
+
+ * "git diff --no-rename A B" did not disable rename detection but did
+   not trigger an error from the command line parser.
+   (merge 457f96252f rs/parse-options-with-keep-unknown-abbrev-fix later to maint).
+
+ * "git archive --remote=<remote>" learned to talk over the smart
+   http (aka stateless) transport.
+   (merge 176cd68634 jx/remote-archive-over-smart-http later to maint).
+
+ * Fetching via protocol v0 over Smart HTTP transport sometimes failed
+   to correctly auto-follow tags.
+   (merge fba732c462 jk/fetch-auto-tag-following-fix later to maint).
+
+ * The documentation for the --exclude-per-directory option marked it
+   as deprecated, which confused readers into thinking there may be a
+   plan to remove it in the future, which was not our intention.
+   (merge 0009542cab jc/ls-files-doc-update later to maint).
+
  * Other code cleanup, docfix, build fix, etc.
    (merge 50f1abcff6 js/packfile-h-typofix later to maint).
    (merge cbf498eb53 jb/reflog-expire-delete-dry-run-options later to maint).
@@ -214,3 +298,10 @@ Fixes since v2.43
    (merge 25aec06326 ib/rebase-reschedule-doc later to maint).
    (merge 5aea3955bc rj/clarify-branch-doc-m later to maint).
    (merge 9cce3be2df bk/bisect-doc-fix later to maint).
+   (merge 8f50984cf4 ne/doc-filter-blob-limit-fix later to maint).
+   (merge f10b0989b8 la/strvec-comment-fix later to maint).
+   (merge 8430b438f6 vd/fsck-submodule-url-test later to maint).
+   (merge f10031fadd nb/rebase-x-shell-docfix later to maint).
+   (merge af3d2c160f jc/majordomo-to-subspace later to maint).
+   (merge ee9895b0ff sd/negotiate-trace-fix later to maint).
+   (merge 976d0251ce jc/coc-whitespace-fix later to maint).
