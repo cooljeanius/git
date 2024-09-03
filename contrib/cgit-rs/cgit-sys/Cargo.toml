@@ -1,0 +1,9 @@
+[package]
+name = "cgit-sys"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+links = "git"
+
+[lib]
+path = "src/lib.rs"

@@ -485,6 +485,11 @@ struct config_set {
 };
 
 /**
+ * Alloc a config_set
+ */
+struct config_set *git_configset_alloc(void);
+
+/**
  * Initializes the config_set `cs`.
  */
 void git_configset_init(struct config_set *cs);
@@ -531,6 +536,11 @@ int git_configset_get_string_multi(struct config_set *cs, const char *key,
  * Clears `config_set` structure, removes all saved variable-value pairs.
  */
 void git_configset_clear(struct config_set *cs);
+
+/**
+ * Clears and frees a heap-allocated `config_set` structure.
+ */
+void git_configset_clear_and_free(struct config_set *cs);
 
 /*
  * These functions return 1 if not found, and 0 if found, leaving the found

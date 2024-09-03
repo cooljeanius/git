@@ -2294,6 +2294,11 @@ static int config_set_element_cmp(const void *cmp_data UNUSED,
 	return strcmp(e1->key, e2->key);
 }
 
+struct config_set *git_configset_alloc(void)
+{
+	return xmalloc(sizeof(struct config_set));
+}
+
 void git_configset_init(struct config_set *set)
 {
 	hashmap_init(&set->config_hash, config_set_element_cmp, NULL, 0);
@@ -2321,6 +2326,12 @@ void git_configset_clear(struct config_set *set)
 	set->list.nr = 0;
 	set->list.alloc = 0;
 	set->list.items = NULL;
+}
+
+void git_configset_clear_and_free(struct config_set *set)
+{
+	git_configset_clear(set);
+	free(set);
 }
 
 static int config_set_callback(const char *key, const char *value,

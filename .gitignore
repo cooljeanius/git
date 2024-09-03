@@ -248,3 +248,5 @@ Release/
 /git.VC.db
 *.dSYM
 /contrib/buildsystems/out
+/contrib/cgit-rs/target
+/contrib/cgit-rs/cgit-sys/target
