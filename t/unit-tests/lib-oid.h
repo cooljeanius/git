@@ -14,4 +14,5 @@
  */
 int get_oid_arbitrary_hex(const char *s, struct object_id *oid);
 
+int init_hash_algo(void);
 #endif /* LIB_OID_H */
