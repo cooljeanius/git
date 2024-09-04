@@ -211,7 +211,7 @@ static int show_default(void)
 	return 0;
 }
 
-static int show_reference(const char *refname, const struct object_id *oid,
+static int show_reference(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 			  int flag UNUSED, void *cb_data UNUSED)
 {
 	if (ref_excluded(&ref_excludes, refname))
@@ -220,7 +220,7 @@ static int show_reference(const char *refname, const struct object_id *oid,
 	return 0;
 }
 
-static int anti_reference(const char *refname, const struct object_id *oid,
+static int anti_reference(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 			  int flag UNUSED, void *cb_data UNUSED)
 {
 	show_rev(REVERSED, oid, refname);
@@ -553,7 +553,10 @@ static int cmd_parseopt(int argc, const char **argv, const char *prefix)
 	strbuf_release(&sb);
 	strvec_clear(&longnames);
 	strvec_clear(&usage);
-	free((char *) opts->help);
+	for (size_t i = 0; i < opts_nr; i++) {
+		free((char *) opts[i].help);
+		free((char *) opts[i].argh);
+	}
 	free(opts);
 	return 0;
 }

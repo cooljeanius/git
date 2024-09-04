@@ -63,7 +63,7 @@ struct show_ref_data {
 	int show_head;
 };
 
-static int show_ref(const char *refname, const struct object_id *oid,
+static int show_ref(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 		    int flag UNUSED, void *cbdata)
 {
 	struct show_ref_data *data = cbdata;
@@ -97,6 +97,7 @@ match:
 }
 
 static int add_existing(const char *refname,
+			const char *referent UNUSED,
 			const struct object_id *oid UNUSED,
 			int flag UNUSED, void *cbdata)
 {
@@ -293,8 +294,8 @@ int cmd_show_ref(int argc, const char **argv, const char *prefix)
 	struct show_one_options show_one_opts = {0};
 	int verify = 0, exists = 0;
 	const struct option show_ref_options[] = {
-		OPT_BOOL(0, "tags", &patterns_opts.tags_only, N_("only show tags (can be combined with branches)")),
-		OPT_BOOL(0, "branches", &patterns_opts.branches_only, N_("only show branches (can be combined with tags)")),
+		OPT_BOOL(0, "tags", &patterns_opts.tags_only, N_("only show tags (can be combined with --branches)")),
+		OPT_BOOL(0, "branches", &patterns_opts.branches_only, N_("only show branches (can be combined with --tags)")),
 		OPT_HIDDEN_BOOL(0, "heads", &patterns_opts.branches_only,
 				N_("deprecated synonym for --branches")),
 		OPT_BOOL(0, "exists", &exists, N_("check for reference existence without resolving")),

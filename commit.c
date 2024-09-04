@@ -85,12 +85,18 @@ struct commit *lookup_commit(struct repository *r, const struct object_id *oid)
 
 struct commit *lookup_commit_reference_by_name(const char *name)
 {
+	return lookup_commit_reference_by_name_gently(name, 0);
+}
+
+struct commit *lookup_commit_reference_by_name_gently(const char *name,
+						      int quiet)
+{
 	struct object_id oid;
 	struct commit *commit;
 
 	if (repo_get_oid_committish(the_repository, name, &oid))
 		return NULL;
-	commit = lookup_commit_reference(the_repository, &oid);
+	commit = lookup_commit_reference_gently(the_repository, &oid, quiet);
 	if (repo_parse_commit(the_repository, commit))
 		return NULL;
 	return commit;
@@ -1960,5 +1966,5 @@ int run_commit_hook(int editor_is_used, const char *index_file,
 	va_end(args);
 
 	opt.invoked_hook = invoked_hook;
-	return run_hooks_opt(name, &opt);
+	return run_hooks_opt(the_repository, name, &opt);
 }

@@ -56,7 +56,7 @@ void hashflush(struct hashfile *f)
 	}
 }
 
-static void free_hashfile(struct hashfile *f)
+void free_hashfile(struct hashfile *f)
 {
 	free(f->buffer);
 	free(f->check_buffer);
@@ -100,6 +100,15 @@ int finalize_hashfile(struct hashfile *f, unsigned char *result,
 	}
 	free_hashfile(f);
 	return fd;
+}
+
+void discard_hashfile(struct hashfile *f)
+{
+	if (0 <= f->check_fd)
+		close(f->check_fd);
+	if (0 <= f->fd)
+		close(f->fd);
+	free_hashfile(f);
 }
 
 void hashwrite(struct hashfile *f, const void *buf, unsigned int count)

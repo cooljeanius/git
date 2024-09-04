@@ -259,58 +259,6 @@ static void reftable_ref_record_copy_from(void *rec, const void *src_rec,
 	}
 }
 
-static char hexdigit(int c)
-{
-	if (c <= 9)
-		return '0' + c;
-	return 'a' + (c - 10);
-}
-
-static void hex_format(char *dest, const unsigned char *src, int hash_size)
-{
-	assert(hash_size > 0);
-	if (src) {
-		int i = 0;
-		for (i = 0; i < hash_size; i++) {
-			dest[2 * i] = hexdigit(src[i] >> 4);
-			dest[2 * i + 1] = hexdigit(src[i] & 0xf);
-		}
-		dest[2 * hash_size] = 0;
-	}
-}
-
-static void reftable_ref_record_print_sz(const struct reftable_ref_record *ref,
-					 int hash_size)
-{
-	char hex[GIT_MAX_HEXSZ + 1] = { 0 }; /* BUG */
-	printf("ref{%s(%" PRIu64 ") ", ref->refname, ref->update_index);
-	switch (ref->value_type) {
-	case REFTABLE_REF_SYMREF:
-		printf("=> %s", ref->value.symref);
-		break;
-	case REFTABLE_REF_VAL2:
-		hex_format(hex, ref->value.val2.value, hash_size);
-		printf("val 2 %s", hex);
-		hex_format(hex, ref->value.val2.target_value,
-			   hash_size);
-		printf("(T %s)", hex);
-		break;
-	case REFTABLE_REF_VAL1:
-		hex_format(hex, ref->value.val1, hash_size);
-		printf("val 1 %s", hex);
-		break;
-	case REFTABLE_REF_DELETION:
-		printf("delete");
-		break;
-	}
-	printf("}\n");
-}
-
-void reftable_ref_record_print(const struct reftable_ref_record *ref,
-			       uint32_t hash_id) {
-	reftable_ref_record_print_sz(ref, hash_size(hash_id));
-}
-
 static void reftable_ref_record_release_void(void *rec)
 {
 	reftable_ref_record_release(rec);
@@ -480,12 +428,6 @@ static int reftable_ref_record_cmp_void(const void *_a, const void *_b)
 	return strcmp(a->refname, b->refname);
 }
 
-static void reftable_ref_record_print_void(const void *rec,
-					   int hash_size)
-{
-	reftable_ref_record_print_sz((struct reftable_ref_record *) rec, hash_size);
-}
-
 static struct reftable_record_vtable reftable_ref_record_vtable = {
 	.key = &reftable_ref_record_key,
 	.type = BLOCK_TYPE_REF,
@@ -497,7 +439,6 @@ static struct reftable_record_vtable reftable_ref_record_vtable = {
 	.is_deletion = &reftable_ref_record_is_deletion_void,
 	.equal = &reftable_ref_record_equal_void,
 	.cmp = &reftable_ref_record_cmp_void,
-	.print = &reftable_ref_record_print_void,
 };
 
 static void reftable_obj_record_key(const void *r, struct strbuf *dest)
@@ -516,23 +457,8 @@ static void reftable_obj_record_release(void *rec)
 	memset(obj, 0, sizeof(struct reftable_obj_record));
 }
 
-static void reftable_obj_record_print(const void *rec, int hash_size)
-{
-	const struct reftable_obj_record *obj = rec;
-	char hex[GIT_MAX_HEXSZ + 1] = { 0 };
-	struct strbuf offset_str = STRBUF_INIT;
-	int i;
-
-	for (i = 0; i < obj->offset_len; i++)
-		strbuf_addf(&offset_str, "%" PRIu64 " ", obj->offsets[i]);
-	hex_format(hex, obj->hash_prefix, obj->hash_prefix_len);
-	printf("prefix %s (len %d), offsets [%s]\n",
-	       hex, obj->hash_prefix_len, offset_str.buf);
-	strbuf_release(&offset_str);
-}
-
 static void reftable_obj_record_copy_from(void *rec, const void *src_rec,
-					  int hash_size)
+					  int hash_size UNUSED)
 {
 	struct reftable_obj_record *obj = rec;
 	const struct reftable_obj_record *src =
@@ -559,7 +485,7 @@ static uint8_t reftable_obj_record_val_type(const void *rec)
 }
 
 static int reftable_obj_record_encode(const void *rec, struct string_view s,
-				      int hash_size)
+				      int hash_size UNUSED)
 {
 	const struct reftable_obj_record *r = rec;
 	struct string_view start = s;
@@ -594,7 +520,8 @@ static int reftable_obj_record_encode(const void *rec, struct string_view s,
 
 static int reftable_obj_record_decode(void *rec, struct strbuf key,
 				      uint8_t val_type, struct string_view in,
-				      int hash_size, struct strbuf *scratch UNUSED)
+				      int hash_size UNUSED,
+				      struct strbuf *scratch UNUSED)
 {
 	struct string_view start = in;
 	struct reftable_obj_record *r = rec;
@@ -647,12 +574,13 @@ static int reftable_obj_record_decode(void *rec, struct strbuf key,
 	return start.len - in.len;
 }
 
-static int not_a_deletion(const void *p)
+static int not_a_deletion(const void *p UNUSED)
 {
 	return 0;
 }
 
-static int reftable_obj_record_equal_void(const void *a, const void *b, int hash_size)
+static int reftable_obj_record_equal_void(const void *a, const void *b,
+					  int hash_size UNUSED)
 {
 	struct reftable_obj_record *ra = (struct reftable_obj_record *) a;
 	struct reftable_obj_record *rb = (struct reftable_obj_record *) b;
@@ -701,40 +629,7 @@ static struct reftable_record_vtable reftable_obj_record_vtable = {
 	.is_deletion = &not_a_deletion,
 	.equal = &reftable_obj_record_equal_void,
 	.cmp = &reftable_obj_record_cmp_void,
-	.print = &reftable_obj_record_print,
 };
-
-static void reftable_log_record_print_sz(struct reftable_log_record *log,
-					 int hash_size)
-{
-	char hex[GIT_MAX_HEXSZ + 1] = { 0 };
-
-	switch (log->value_type) {
-	case REFTABLE_LOG_DELETION:
-		printf("log{%s(%" PRIu64 ") delete\n", log->refname,
-		       log->update_index);
-		break;
-	case REFTABLE_LOG_UPDATE:
-		printf("log{%s(%" PRIu64 ") %s <%s> %" PRIu64 " %04d\n",
-		       log->refname, log->update_index,
-		       log->value.update.name ? log->value.update.name : "",
-		       log->value.update.email ? log->value.update.email : "",
-		       log->value.update.time,
-		       log->value.update.tz_offset);
-		hex_format(hex, log->value.update.old_hash, hash_size);
-		printf("%s => ", hex);
-		hex_format(hex, log->value.update.new_hash, hash_size);
-		printf("%s\n\n%s\n}\n", hex,
-		       log->value.update.message ? log->value.update.message : "");
-		break;
-	}
-}
-
-void reftable_log_record_print(struct reftable_log_record *log,
-				      uint32_t hash_id)
-{
-	reftable_log_record_print_sz(log, hash_size(hash_id));
-}
 
 static void reftable_log_record_key(const void *r, struct strbuf *dest)
 {
@@ -1039,11 +934,6 @@ static int reftable_log_record_is_deletion_void(const void *p)
 		(const struct reftable_log_record *)p);
 }
 
-static void reftable_log_record_print_void(const void *rec, int hash_size)
-{
-	reftable_log_record_print_sz((struct reftable_log_record*)rec, hash_size);
-}
-
 static struct reftable_record_vtable reftable_log_record_vtable = {
 	.key = &reftable_log_record_key,
 	.type = BLOCK_TYPE_LOG,
@@ -1055,7 +945,6 @@ static struct reftable_record_vtable reftable_log_record_vtable = {
 	.is_deletion = &reftable_log_record_is_deletion_void,
 	.equal = &reftable_log_record_equal_void,
 	.cmp = &reftable_log_record_cmp_void,
-	.print = &reftable_log_record_print_void,
 };
 
 static void reftable_index_record_key(const void *r, struct strbuf *dest)
@@ -1066,7 +955,7 @@ static void reftable_index_record_key(const void *r, struct strbuf *dest)
 }
 
 static void reftable_index_record_copy_from(void *rec, const void *src_rec,
-					    int hash_size)
+					    int hash_size UNUSED)
 {
 	struct reftable_index_record *dst = rec;
 	const struct reftable_index_record *src = src_rec;
@@ -1082,13 +971,13 @@ static void reftable_index_record_release(void *rec)
 	strbuf_release(&idx->last_key);
 }
 
-static uint8_t reftable_index_record_val_type(const void *rec)
+static uint8_t reftable_index_record_val_type(const void *rec UNUSED)
 {
 	return 0;
 }
 
 static int reftable_index_record_encode(const void *rec, struct string_view out,
-					int hash_size)
+					int hash_size UNUSED)
 {
 	const struct reftable_index_record *r =
 		(const struct reftable_index_record *)rec;
@@ -1104,8 +993,10 @@ static int reftable_index_record_encode(const void *rec, struct string_view out,
 }
 
 static int reftable_index_record_decode(void *rec, struct strbuf key,
-					uint8_t val_type, struct string_view in,
-					int hash_size, struct strbuf *scratch UNUSED)
+					uint8_t val_type UNUSED,
+					struct string_view in,
+					int hash_size UNUSED,
+					struct strbuf *scratch UNUSED)
 {
 	struct string_view start = in;
 	struct reftable_index_record *r = rec;
@@ -1122,7 +1013,8 @@ static int reftable_index_record_decode(void *rec, struct strbuf key,
 	return start.len - in.len;
 }
 
-static int reftable_index_record_equal(const void *a, const void *b, int hash_size)
+static int reftable_index_record_equal(const void *a, const void *b,
+				       int hash_size UNUSED)
 {
 	struct reftable_index_record *ia = (struct reftable_index_record *) a;
 	struct reftable_index_record *ib = (struct reftable_index_record *) b;
@@ -1137,13 +1029,6 @@ static int reftable_index_record_cmp(const void *_a, const void *_b)
 	return strbuf_cmp(&a->last_key, &b->last_key);
 }
 
-static void reftable_index_record_print(const void *rec, int hash_size)
-{
-	const struct reftable_index_record *idx = rec;
-	/* TODO: escape null chars? */
-	printf("\"%s\" %" PRIu64 "\n", idx->last_key.buf, idx->offset);
-}
-
 static struct reftable_record_vtable reftable_index_record_vtable = {
 	.key = &reftable_index_record_key,
 	.type = BLOCK_TYPE_INDEX,
@@ -1155,7 +1040,6 @@ static struct reftable_record_vtable reftable_index_record_vtable = {
 	.is_deletion = &not_a_deletion,
 	.equal = &reftable_index_record_equal,
 	.cmp = &reftable_index_record_cmp,
-	.print = &reftable_index_record_print,
 };
 
 void reftable_record_key(struct reftable_record *rec, struct strbuf *dest)
@@ -1333,10 +1217,4 @@ void reftable_record_init(struct reftable_record *rec, uint8_t typ)
 	default:
 		BUG("unhandled record type");
 	}
-}
-
-void reftable_record_print(struct reftable_record *rec, int hash_size)
-{
-	printf("'%c': ", rec->type);
-	reftable_record_vtable(rec)->print(reftable_record_data(rec), hash_size);
 }

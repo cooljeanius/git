@@ -89,7 +89,12 @@ int read_bundle_header_fd(int fd, struct bundle_header *header,
 		goto abort;
 	}
 
-	header->hash_algo = the_hash_algo;
+	/*
+	 * The default hash format for bundles is SHA1, unless told otherwise
+	 * by an "object-format=" capability, which is being handled in
+	 * `parse_capability()`.
+	 */
+	header->hash_algo = &hash_algos[GIT_HASH_SHA1];
 
 	/* The bundle header ends with an empty line */
 	while (!strbuf_getwholeline_fd(&buf, fd, '\n') &&
@@ -639,10 +644,8 @@ int unbundle(struct repository *r, struct bundle_header *header,
 	if (flags & VERIFY_BUNDLE_FSCK)
 		strvec_push(&ip.args, "--fsck-objects");
 
-	if (extra_index_pack_args) {
+	if (extra_index_pack_args)
 		strvec_pushv(&ip.args, extra_index_pack_args->v);
-		strvec_clear(extra_index_pack_args);
-	}
 
 	ip.in = bundle_fd;
 	ip.no_stdout = 1;

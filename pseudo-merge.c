@@ -183,11 +183,12 @@ done:
 	return ret;
 }
 
-void load_pseudo_merges_from_config(struct string_list *list)
+void load_pseudo_merges_from_config(struct repository *r,
+				    struct string_list *list)
 {
 	struct string_list_item *item;
 
-	git_config(pseudo_merge_config, list);
+	repo_config(r, pseudo_merge_config, list);
 
 	for_each_string_list_item(item, list) {
 		struct pseudo_merge_group *group = item->util;
@@ -201,6 +202,7 @@ void load_pseudo_merges_from_config(struct string_list *list)
 }
 
 static int find_pseudo_merge_group_for_ref(const char *refname,
+					   const char *referent UNUSED,
 					   const struct object_id *oid,
 					   int flags UNUSED,
 					   void *_data)
@@ -216,6 +218,8 @@ static int find_pseudo_merge_group_for_ref(const char *refname,
 
 	c = lookup_commit(the_repository, oid);
 	if (!c)
+		return 0;
+	if (!packlist_find(writer->to_pack, oid))
 		return 0;
 
 	has_bitmap = bitmap_writer_has_bitmapped_object_id(writer, oid);
@@ -357,8 +361,10 @@ static void select_pseudo_merges_1(struct bitmap_writer *writer,
 			p = commit_list_append(c, p);
 		} while (j % group->stable_size);
 
-		bitmap_writer_push_commit(writer, merge, 1);
-		writer->pseudo_merges_nr++;
+		if (merge->parents) {
+			bitmap_writer_push_commit(writer, merge, 1);
+			writer->pseudo_merges_nr++;
+		}
 	}
 
 	/* make up to group->max_merges pseudo merges for unstable commits */
@@ -398,8 +404,9 @@ static void select_pseudo_merges_1(struct bitmap_writer *writer,
 			p = commit_list_append(c, p);
 		}
 
-		bitmap_writer_push_commit(writer, merge, 1);
-		writer->pseudo_merges_nr++;
+		if (merge->parents) {
+			bitmap_writer_push_commit(writer, merge, 1);
+			writer->pseudo_merges_nr++; }
 		if (end >= matches->unstable_nr)
 			break;
 	}
@@ -423,8 +430,7 @@ static void sort_pseudo_merge_matches(struct pseudo_merge_matches *matches)
 	QSORT(matches->unstable, matches->unstable_nr, commit_date_cmp);
 }
 
-void select_pseudo_merges(struct bitmap_writer *writer,
-			  struct commit **commits, size_t commits_nr)
+void select_pseudo_merges(struct bitmap_writer *writer)
 {
 	struct progress *progress = NULL;
 	uint32_t i;

@@ -4,15 +4,13 @@
 	size_t len = ARRAY_SIZE(string) - 1 + \
 		BUILD_ASSERT_OR_ZERO(ARRAY_SIZE(string) > 0) + \
 		BUILD_ASSERT_OR_ZERO(sizeof(string[0]) == sizeof(char)); \
-	int skip = test__run_begin(); \
-	if (!skip) { \
+	if_test (#class " works") { \
 		for (int i = 0; i < 256; i++) { \
 			if (!check_int(class(i), ==, !!memchr(string, i, len)))\
 				test_msg("      i: 0x%02x", i); \
 		} \
 		check(!class(EOF)); \
 	} \
-	test__run_end(!skip, TEST_LOCATION(), #class " works"); \
 } while (0)
 
 #define DIGIT "0123456789"
@@ -33,7 +31,7 @@
 	"\x10\x11\x12\x13\x14\x15\x16\x17\x18\x19\x1a\x1b\x1c\x1d\x1e\x1f" \
 	"\x7f"
 
-int cmd_main(int argc, const char **argv) {
+int cmd_main(int argc UNUSED, const char **argv UNUSED) {
 	TEST_CHAR_CLASS(isspace, " \n\r\t");
 	TEST_CHAR_CLASS(isdigit, DIGIT);
 	TEST_CHAR_CLASS(isalpha, LOWER UPPER);

@@ -164,6 +164,7 @@ static int add(int argc, const char **argv, const char *prefix)
 	struct strbuf buf = STRBUF_INIT, buf2 = STRBUF_INIT;
 	const char *name, *url;
 	int i;
+	int result = 0;
 
 	struct option options[] = {
 		OPT_BOOL('f', "fetch", &fetch, N_("fetch the remote branches")),
@@ -230,8 +231,10 @@ static int add(int argc, const char **argv, const char *prefix)
 			       fetch_tags == TAGS_SET ? "--tags" : "--no-tags");
 	}
 
-	if (fetch && fetch_remote(name))
-		return 1;
+	if (fetch && fetch_remote(name)) {
+		result = 1;
+		goto out;
+	}
 
 	if (master) {
 		strbuf_reset(&buf);
@@ -241,14 +244,15 @@ static int add(int argc, const char **argv, const char *prefix)
 		strbuf_addf(&buf2, "refs/remotes/%s/%s", name, master);
 
 		if (refs_update_symref(get_main_ref_store(the_repository), buf.buf, buf2.buf, "remote add"))
-			return error(_("Could not setup master '%s'"), master);
+			result = error(_("Could not setup master '%s'"), master);
 	}
 
+out:
 	strbuf_release(&buf);
 	strbuf_release(&buf2);
 	string_list_clear(&track, 0);
 
-	return 0;
+	return result;
 }
 
 struct branch_info {
@@ -258,7 +262,7 @@ struct branch_info {
 	char *push_remote_name;
 };
 
-static struct string_list branch_list = STRING_LIST_INIT_NODUP;
+static struct string_list branch_list = STRING_LIST_INIT_DUP;
 
 static const char *abbrev_ref(const char *name, const char *prefix)
 {
@@ -292,8 +296,8 @@ static int config_read_branches(const char *key, const char *value,
 		type = PUSH_REMOTE;
 	else
 		return 0;
-	name = xmemdupz(key, key_len);
 
+	name = xmemdupz(key, key_len);
 	item = string_list_insert(&branch_list, name);
 
 	if (!item->util)
@@ -337,6 +341,7 @@ static int config_read_branches(const char *key, const char *value,
 		BUG("unexpected type=%d", type);
 	}
 
+	free(name);
 	return 0;
 }
 
@@ -543,6 +548,7 @@ struct branches_for_remote {
 };
 
 static int add_branch_for_removal(const char *refname,
+				  const char *referent UNUSED,
 				  const struct object_id *oid UNUSED,
 				  int flags UNUSED, void *cb_data)
 {
@@ -554,13 +560,16 @@ static int add_branch_for_removal(const char *refname,
 	refspec.dst = (char *)refname;
 	if (remote_find_tracking(branches->remote, &refspec))
 		return 0;
+	free(refspec.src);
 
 	/* don't delete a branch if another remote also uses it */
 	for (kr = branches->keep->list; kr; kr = kr->next) {
 		memset(&refspec, 0, sizeof(refspec));
 		refspec.dst = (char *)refname;
-		if (!remote_find_tracking(kr->remote, &refspec))
+		if (!remote_find_tracking(kr->remote, &refspec)) {
+			free(refspec.src);
 			return 0;
+		}
 	}
 
 	/* don't delete non-remote-tracking refs */
@@ -585,7 +594,7 @@ struct rename_info {
 	uint32_t symrefs_nr;
 };
 
-static int read_remote_branches(const char *refname,
+static int read_remote_branches(const char *refname, const char *referent UNUSED,
 				const struct object_id *oid UNUSED,
 				int flags UNUSED, void *cb_data)
 {
@@ -667,7 +676,11 @@ static int config_read_push_default(const char *key, const char *value,
 static void handle_push_default(const char* old_name, const char* new_name)
 {
 	struct push_default_info push_default = {
-		old_name, CONFIG_SCOPE_UNKNOWN, STRBUF_INIT, -1 };
+		.old_name = old_name,
+		.scope = CONFIG_SCOPE_UNKNOWN,
+		.origin = STRBUF_INIT,
+		.linenr = -1,
+	};
 	git_config(config_read_push_default, &push_default);
 	if (push_default.scope >= CONFIG_SCOPE_COMMAND)
 		; /* pass */
@@ -687,6 +700,8 @@ static void handle_push_default(const char* old_name, const char* new_name)
 			push_default.origin.buf, push_default.linenr,
 			old_name);
 	}
+
+	strbuf_release(&push_default.origin);
 }
 
 
@@ -704,6 +719,7 @@ static int mv(int argc, const char **argv, const char *prefix)
 	struct rename_info rename;
 	int i, refs_renamed_nr = 0, refspec_updated = 0;
 	struct progress *progress = NULL;
+	int result = 0;
 
 	argc = parse_options(argc, argv, prefix, options,
 			     builtin_remote_rename_usage, 0);
@@ -736,9 +752,11 @@ static int mv(int argc, const char **argv, const char *prefix)
 
 	strbuf_addf(&buf, "remote.%s", rename.old_name);
 	strbuf_addf(&buf2, "remote.%s", rename.new_name);
-	if (git_config_rename_section(buf.buf, buf2.buf) < 1)
-		return error(_("Could not rename config section '%s' to '%s'"),
-				buf.buf, buf2.buf);
+	if (repo_config_rename_section(the_repository, buf.buf, buf2.buf) < 1) {
+		result = error(_("Could not rename config section '%s' to '%s'"),
+			       buf.buf, buf2.buf);
+		goto out;
+	}
 
 	if (oldremote->fetch.raw_nr) {
 		strbuf_reset(&buf);
@@ -784,7 +802,7 @@ static int mv(int argc, const char **argv, const char *prefix)
 	}
 
 	if (!refspec_updated)
-		return 0;
+		goto out;
 
 	/*
 	 * First remove symrefs, then rename the rest, finally create
@@ -850,11 +868,16 @@ static int mv(int argc, const char **argv, const char *prefix)
 		display_progress(progress, ++refs_renamed_nr);
 	}
 	stop_progress(&progress);
-	string_list_clear(&remote_branches, 1);
 
 	handle_push_default(rename.old_name, rename.new_name);
 
-	return 0;
+out:
+	string_list_clear(&remote_branches, 1);
+	strbuf_release(&old_remote_context);
+	strbuf_release(&buf);
+	strbuf_release(&buf2);
+	strbuf_release(&buf3);
+	return result;
 }
 
 static int rm(int argc, const char **argv, const char *prefix)
@@ -944,12 +967,21 @@ static int rm(int argc, const char **argv, const char *prefix)
 
 	if (!result) {
 		strbuf_addf(&buf, "remote.%s", remote->name);
-		if (git_config_rename_section(buf.buf, NULL) < 1)
-			return error(_("Could not remove config section '%s'"), buf.buf);
+		if (repo_config_rename_section(the_repository, buf.buf, NULL) < 1) {
+			result = error(_("Could not remove config section '%s'"), buf.buf);
+			goto out;
+		}
 
 		handle_push_default(remote->name, NULL);
 	}
 
+out:
+	for (struct known_remote *r = known_remotes.list; r;) {
+		struct known_remote *next = r->next;
+		free(r);
+		r = next;
+	}
+	strbuf_release(&buf);
 	return result;
 }
 
@@ -971,6 +1003,7 @@ static void free_remote_ref_states(struct ref_states *states)
 }
 
 static int append_ref_to_tracked_list(const char *refname,
+				      const char *referent UNUSED,
 				      const struct object_id *oid UNUSED,
 				      int flags, void *cb_data)
 {
@@ -982,8 +1015,10 @@ static int append_ref_to_tracked_list(const char *refname,
 
 	memset(&refspec, 0, sizeof(refspec));
 	refspec.dst = (char *)refname;
-	if (!remote_find_tracking(states->remote, &refspec))
+	if (!remote_find_tracking(states->remote, &refspec)) {
 		string_list_append(&states->tracked, abbrev_branch(refspec.src));
+		free(refspec.src);
+	}
 
 	return 0;
 }

@@ -318,6 +318,11 @@ int check_refname_format(const char *refname, int flags)
 	return check_or_sanitize_refname(refname, flags, NULL);
 }
 
+int refs_fsck(struct ref_store *refs, struct fsck_options *o)
+{
+	return refs->be->fsck(refs, o);
+}
+
 void sanitize_refname_component(const char *refname, struct strbuf *out)
 {
 	if (check_or_sanitize_refname(refname, REFNAME_ALLOW_ONELEVEL, out))
@@ -414,7 +419,7 @@ int refs_ref_exists(struct ref_store *refs, const char *refname)
 					 NULL, NULL);
 }
 
-static int for_each_filter_refs(const char *refname,
+static int for_each_filter_refs(const char *refname, const char *referent,
 				const struct object_id *oid,
 				int flags, void *data)
 {
@@ -424,7 +429,7 @@ static int for_each_filter_refs(const char *refname,
 		return 0;
 	if (filter->prefix)
 		skip_prefix(refname, filter->prefix, &refname);
-	return filter->fn(refname, oid, flags, filter->cb_data);
+	return filter->fn(refname, referent, oid, flags, filter->cb_data);
 }
 
 struct warn_if_dangling_data {
@@ -435,7 +440,7 @@ struct warn_if_dangling_data {
 	const char *msg_fmt;
 };
 
-static int warn_if_dangling_symref(const char *refname,
+static int warn_if_dangling_symref(const char *refname, const char *referent UNUSED,
 				   const struct object_id *oid UNUSED,
 				   int flags, void *cb_data)
 {
@@ -506,7 +511,7 @@ int refs_head_ref_namespaced(struct ref_store *refs, each_ref_fn fn, void *cb_da
 
 	strbuf_addf(&buf, "%sHEAD", get_git_namespace());
 	if (!refs_read_ref_full(refs, buf.buf, RESOLVE_REF_READING, &oid, &flag))
-		ret = fn(buf.buf, &oid, flag, cb_data);
+		ret = fn(buf.buf, NULL, &oid, flag, cb_data);
 	strbuf_release(&buf);
 
 	return ret;
@@ -1547,7 +1552,7 @@ int refs_head_ref(struct ref_store *refs, each_ref_fn fn, void *cb_data)
 
 	if (refs_resolve_ref_unsafe(refs, "HEAD", RESOLVE_REF_READING,
 				    &oid, &flag))
-		return fn("HEAD", &oid, flag, cb_data);
+		return fn("HEAD", NULL, &oid, flag, cb_data);
 
 	return 0;
 }
@@ -1754,8 +1759,8 @@ static int refs_read_special_head(struct ref_store *ref_store,
 		goto done;
 	}
 
-	result = parse_loose_ref_contents(content.buf, oid, referent, type,
-					  failure_errno);
+	result = parse_loose_ref_contents(ref_store->repo->hash_algo, content.buf,
+					  oid, referent, type, failure_errno);
 
 done:
 	strbuf_release(&full_path);
@@ -1838,7 +1843,7 @@ const char *refs_resolve_ref_unsafe(struct ref_store *refs,
 			    failure_errno != ENOTDIR)
 				return NULL;
 
-			oidclr(oid, the_repository->hash_algo);
+			oidclr(oid, refs->repo->hash_algo);
 			if (*flags & REF_BAD_NAME)
 				*flags |= REF_ISBROKEN;
 			return refname;
@@ -1848,7 +1853,7 @@ const char *refs_resolve_ref_unsafe(struct ref_store *refs,
 
 		if (!(read_flags & REF_ISSYMREF)) {
 			if (*flags & REF_BAD_NAME) {
-				oidclr(oid, the_repository->hash_algo);
+				oidclr(oid, refs->repo->hash_algo);
 				*flags |= REF_ISBROKEN;
 			}
 			return refname;
@@ -1856,7 +1861,7 @@ const char *refs_resolve_ref_unsafe(struct ref_store *refs,
 
 		refname = sb_refname.buf;
 		if (resolve_flags & RESOLVE_REF_NO_RECURSE) {
-			oidclr(oid, the_repository->hash_algo);
+			oidclr(oid, refs->repo->hash_algo);
 			return refname;
 		}
 		if (check_refname_format(refname, REFNAME_ALLOW_ONELEVEL)) {
@@ -2011,7 +2016,7 @@ struct ref_store *repo_get_submodule_ref_store(struct repository *repo,
 		free(subrepo);
 		goto done;
 	}
-	refs = ref_store_init(subrepo, the_repository->ref_storage_format,
+	refs = ref_store_init(subrepo, subrepo->ref_storage_format,
 			      submodule_sb.buf,
 			      REF_STORE_READ | REF_STORE_ODB);
 	register_ref_store_map(&repo->submodule_ref_stores, "submodule",
@@ -2045,7 +2050,7 @@ struct ref_store *get_worktree_ref_store(const struct worktree *wt)
 				      common_path.buf, REF_STORE_ALL_CAPS);
 		strbuf_release(&common_path);
 	} else {
-		refs = ref_store_init(wt->repo, the_repository->ref_storage_format,
+		refs = ref_store_init(wt->repo, wt->repo->ref_storage_format,
 				      wt->repo->commondir, REF_STORE_ALL_CAPS);
 	}
 
@@ -2134,7 +2139,7 @@ static int run_transaction_hook(struct ref_transaction *transaction,
 	const char *hook;
 	int ret = 0, i;
 
-	hook = find_hook("reference-transaction");
+	hook = find_hook(transaction->ref_store->repo, "reference-transaction");
 	if (!hook)
 		return ret;
 
@@ -2388,8 +2393,9 @@ struct do_for_each_reflog_help {
 };
 
 static int do_for_each_reflog_helper(const char *refname,
+				     const char *referent UNUSED,
 				     const struct object_id *oid UNUSED,
-				     int flags,
+				     int flags UNUSED,
 				     void *cb_data)
 {
 	struct do_for_each_reflog_help *hp = cb_data;
@@ -2593,7 +2599,7 @@ struct migration_data {
 	struct strbuf *errbuf;
 };
 
-static int migrate_one_ref(const char *refname, const struct object_id *oid,
+static int migrate_one_ref(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 			   int flags, void *cb_data)
 {
 	struct migration_data *data = cb_data;
