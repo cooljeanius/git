@@ -280,9 +280,14 @@ jobs:
             env:
               NO_SVN_TESTS: 1
               NO_PERL: 1
+              NO_PYTHON: 1
+              NO_GITWEB: 1
+              NO_TCLTK: 1
           - jobname: osx-reftable
             cc: clang
             pool: macos-13
+            env:
+              NO_SVN_TESTS: 1
           - jobname: osx-gcc
             cc: gcc-13
             pool: macos-13
