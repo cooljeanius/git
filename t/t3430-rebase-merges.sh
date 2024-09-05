@@ -21,6 +21,7 @@ Initial setup:
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 . "$TEST_DIRECTORY"/lib-rebase.sh
 . "$TEST_DIRECTORY"/lib-log-graph.sh
@@ -391,8 +392,7 @@ test_expect_success 'refuse to merge ancestors of HEAD' '
 
 test_expect_success 'root commits' '
 	git checkout --orphan unrelated &&
-	(GIT_AUTHOR_NAME="Parsnip" GIT_AUTHOR_EMAIL="root@example.com" \
-	 test_commit second-root) &&
+	test_commit --author "Parsnip <root@example.com>" second-root &&
 	test_commit third-root &&
 	cat >script-from-scratch <<-\EOF &&
 	pick third-root

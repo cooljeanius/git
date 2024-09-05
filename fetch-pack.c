@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "repository.h"
 #include "config.h"
@@ -181,6 +183,7 @@ static int rev_list_insert_ref(struct fetch_negotiator *negotiator,
 }
 
 static int rev_list_insert_ref_oid(const char *refname UNUSED,
+				   const char *referent UNUSED,
 				   const struct object_id *oid,
 				   int flag UNUSED,
 				   void *cb_data)
@@ -290,7 +293,8 @@ static void mark_tips(struct fetch_negotiator *negotiator,
 	int i;
 
 	if (!negotiation_tips) {
-		for_each_rawref(rev_list_insert_ref_oid, negotiator);
+		refs_for_each_rawref(get_main_ref_store(the_repository),
+				     rev_list_insert_ref_oid, negotiator);
 		return;
 	}
 
@@ -607,6 +611,7 @@ static int mark_complete(const struct object_id *oid)
 }
 
 static int mark_complete_oid(const char *refname UNUSED,
+			     const char *referent UNUSED,
 			     const struct object_id *oid,
 			     int flag UNUSED,
 			     void *cb_data UNUSED)
@@ -732,11 +737,6 @@ static void mark_alternate_complete(struct fetch_negotiator *negotiator UNUSED,
 	mark_complete(&obj->oid);
 }
 
-struct loose_object_iter {
-	struct oidset *loose_object_set;
-	struct ref *refs;
-};
-
 /*
  * Mark recent commits available locally and reachable from a local ref as
  * COMPLETE.
@@ -793,7 +793,8 @@ static void mark_complete_and_common_ref(struct fetch_negotiator *negotiator,
 	 */
 	trace2_region_enter("fetch-pack", "mark_complete_local_refs", NULL);
 	if (!args->deepen) {
-		for_each_rawref(mark_complete_oid, NULL);
+		refs_for_each_rawref(get_main_ref_store(the_repository),
+				     mark_complete_oid, NULL);
 		for_each_cached_alternate(NULL, mark_alternate_complete);
 		commit_list_sort_by_date(&complete);
 		if (cutoff)
@@ -957,12 +958,7 @@ static int get_pack(struct fetch_pack_args *args,
 		strvec_push(&cmd.args, alternate_shallow_file);
 	}
 
-	if (fetch_fsck_objects >= 0
-	    ? fetch_fsck_objects
-	    : transfer_fsck_objects >= 0
-	    ? transfer_fsck_objects
-	    : 0)
-		fsck_objects = 1;
+	fsck_objects = fetch_pack_fsck_objects();
 
 	if (do_keep || args->from_promisor || index_pack_args || fsck_objects) {
 		if (pack_lockfiles || fsck_objects)
@@ -1041,8 +1037,10 @@ static int get_pack(struct fetch_pack_args *args,
 
 		if (!is_well_formed)
 			die(_("fetch-pack: invalid index-pack output"));
-		if (pack_lockfile)
+		if (pack_lockfiles && pack_lockfile)
 			string_list_append_nodup(pack_lockfiles, pack_lockfile);
+		else
+			free(pack_lockfile);
 		parse_gitmodules_oids(cmd.out, gitmodules_oids);
 		close(cmd.out);
 	}
@@ -1863,13 +1861,13 @@ static int fetch_pack_config_cb(const char *var, const char *value,
 	const char *msg_id;
 
 	if (strcmp(var, "fetch.fsck.skiplist") == 0) {
-		const char *path;
+		char *path ;
 
 		if (git_config_pathname(&path, var, value))
 			return 1;
 		strbuf_addf(&fsck_msg_types, "%cskiplist=%s",
 			fsck_msg_types.len ? ',' : '=', path);
-		free((char *)path);
+		free(path);
 		return 0;
 	}
 
@@ -2047,6 +2045,16 @@ static const struct object_id *iterate_ref_map(void *cb_data)
 		return NULL;
 	*rm = ref->next;
 	return &ref->old_oid;
+}
+
+int fetch_pack_fsck_objects(void)
+{
+	fetch_pack_setup();
+	if (fetch_fsck_objects >= 0)
+		return fetch_fsck_objects;
+	if (transfer_fsck_objects >= 0)
+		return transfer_fsck_objects;
+	return 0;
 }
 
 struct ref *fetch_pack(struct fetch_pack_args *args,

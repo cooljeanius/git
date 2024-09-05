@@ -9,17 +9,14 @@ test_description='git pack-refs should not change the branch semantic
 This test runs git pack-refs and git show-ref and checks that the branch
 semantic is still the same.
 '
+
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+GIT_TEST_DEFAULT_REF_FORMAT=files
+export GIT_TEST_DEFAULT_REF_FORMAT
 
 TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
-
-if ! test_have_prereq REFFILES
-then
-	skip_all='skipping reffiles specific tests'
-	test_done
-fi
 
 test_expect_success 'enable reflogs' '
 	git config core.logallrefupdates true
@@ -32,11 +29,16 @@ test_expect_success 'prepare a trivial repository' '
 	HEAD=$(git rev-parse --verify HEAD)
 '
 
-test_expect_success 'pack_refs(PACK_REFS_ALL | PACK_REFS_PRUNE)' '
-	N=`find .git/refs -type f | wc -l` &&
+test_expect_success 'pack-refs --prune --all' '
+	test_path_is_missing .git/packed-refs &&
+	git pack-refs --no-prune --all &&
+	test_path_is_file .git/packed-refs &&
+	N=$(find .git/refs -type f | wc -l) &&
 	test "$N" != 0 &&
-	test-tool ref-store main pack-refs PACK_REFS_PRUNE,PACK_REFS_ALL &&
-	N=`find .git/refs -type f` &&
+
+	git pack-refs --prune --all &&
+	test_path_is_file .git/packed-refs &&
+	N=$(find .git/refs -type f) &&
 	test -z "$N"
 '
 
@@ -158,6 +160,13 @@ test_expect_success 'test --exclude takes precedence over --include' '
 	git branch dont_pack5 &&
 	git pack-refs --include "refs/heads/pack*" --exclude "refs/heads/pack*" &&
 	test -f .git/refs/heads/dont_pack5'
+
+test_expect_success '--auto packs and prunes refs as usual' '
+	git branch auto &&
+	test_path_is_file .git/refs/heads/auto &&
+	git pack-refs --auto --all &&
+	test_path_is_missing .git/refs/heads/auto
+'
 
 test_expect_success 'see if up-to-date packed refs are preserved' '
 	git branch q &&
@@ -355,6 +364,16 @@ test_expect_success 'pack-refs does not silently delete broken packed ref' '
 test_expect_success 'pack-refs does not drop broken refs during deletion' '
 	git update-ref -d refs/heads/other &&
 	git rev-parse refs/heads/main >actual &&
+	test_cmp expect actual
+'
+
+test_expect_success 'maintenance --auto unconditionally packs loose refs' '
+	git update-ref refs/heads/something HEAD &&
+	test_path_is_file .git/refs/heads/something &&
+	git rev-parse refs/heads/something >expect &&
+	git maintenance run --task=pack-refs --auto &&
+	test_path_is_missing .git/refs/heads/something &&
+	git rev-parse refs/heads/something >actual &&
 	test_cmp expect actual
 '
 

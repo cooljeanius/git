@@ -771,7 +771,7 @@ static enum write_one_status write_one(struct hashfile *f,
 	return WRITE_ONE_WRITTEN;
 }
 
-static int mark_tagged(const char *path UNUSED, const struct object_id *oid,
+static int mark_tagged(const char *path UNUSED, const char *referent UNUSED, const struct object_id *oid,
 		       int flag UNUSED, void *cb_data UNUSED)
 {
 	struct object_id peeled;
@@ -779,7 +779,7 @@ static int mark_tagged(const char *path UNUSED, const struct object_id *oid,
 
 	if (entry)
 		entry->tagged = 1;
-	if (!peel_iterated_oid(oid, &peeled)) {
+	if (!peel_iterated_oid(the_repository, oid, &peeled)) {
 		entry = packlist_find(&to_pack, &peeled);
 		if (entry)
 			entry->tagged = 1;
@@ -939,7 +939,8 @@ static struct object_entry **compute_write_order(void)
 	/*
 	 * Mark objects that are at the tip of tags.
 	 */
-	for_each_tag_ref(mark_tagged, NULL);
+	refs_for_each_tag_ref(get_main_ref_store(the_repository), mark_tagged,
+			      NULL);
 
 	if (use_delta_islands) {
 		max_layers = compute_pack_layers(&to_pack);
@@ -1314,6 +1315,7 @@ static void write_pack_file(void)
 		if (!pack_to_stdout) {
 			struct stat st;
 			struct strbuf tmpname = STRBUF_INIT;
+			struct bitmap_writer bitmap_writer;
 			char *idx_tmp_name = NULL;
 
 			/*
@@ -1339,9 +1341,11 @@ static void write_pack_file(void)
 				    hash_to_hex(hash));
 
 			if (write_bitmap_index) {
-				bitmap_writer_set_checksum(hash);
-				bitmap_writer_build_type_index(
-					&to_pack, written_list, nr_written);
+				bitmap_writer_init(&bitmap_writer,
+						   the_repository, &to_pack);
+				bitmap_writer_set_checksum(&bitmap_writer, hash);
+				bitmap_writer_build_type_index(&bitmap_writer,
+							       written_list);
 			}
 
 			if (cruft)
@@ -1358,12 +1362,17 @@ static void write_pack_file(void)
 				strbuf_addstr(&tmpname, "bitmap");
 				stop_progress(&progress_state);
 
-				bitmap_writer_show_progress(progress);
-				bitmap_writer_select_commits(indexed_commits, indexed_commits_nr, -1);
-				if (bitmap_writer_build(&to_pack) < 0)
+				bitmap_writer_show_progress(&bitmap_writer,
+							    progress);
+				bitmap_writer_select_commits(&bitmap_writer,
+							     indexed_commits,
+							     indexed_commits_nr);
+				if (bitmap_writer_build(&bitmap_writer) < 0)
 					die(_("failed to write bitmap index"));
-				bitmap_writer_finish(written_list, nr_written,
+				bitmap_writer_finish(&bitmap_writer,
+						     written_list,
 						     tmpname.buf, write_bitmap_options);
+				bitmap_writer_free(&bitmap_writer);
 				write_bitmap_index = 0;
 				strbuf_setlen(&tmpname, tmpname_len);
 			}
@@ -1826,7 +1835,8 @@ static void add_pbase_object(struct tree_desc *tree,
 			tree = pbase_tree_get(&entry.oid);
 			if (!tree)
 				return;
-			init_tree_desc(&sub, tree->tree_data, tree->tree_size);
+			init_tree_desc(&sub, &tree->oid,
+				       tree->tree_data, tree->tree_size);
 
 			add_pbase_object(&sub, down, downlen, fullname);
 			pbase_tree_put(tree);
@@ -1886,7 +1896,8 @@ static void add_preferred_base_object(const char *name)
 		}
 		else {
 			struct tree_desc tree;
-			init_tree_desc(&tree, it->pcache.tree_data, it->pcache.tree_size);
+			init_tree_desc(&tree, &it->pcache.oid,
+				       it->pcache.tree_data, it->pcache.tree_size);
 			add_pbase_object(&tree, name, cmplen, name);
 		}
 	}
@@ -2068,7 +2079,8 @@ static void check_object(struct object_entry *entry, uint32_t object_index)
 				oidread(&base_ref,
 					use_pack(p, &w_curs,
 						 entry->in_pack_offset + used,
-						 NULL));
+						 NULL),
+					the_repository->hash_algo);
 				have_base = 1;
 			}
 			entry->in_pack_header_size = used + the_hash_algo->rawsz;
@@ -3117,12 +3129,12 @@ static void add_tag_chain(const struct object_id *oid)
 	}
 }
 
-static int add_ref_tag(const char *tag UNUSED, const struct object_id *oid,
+static int add_ref_tag(const char *tag UNUSED, const char *referent UNUSED, const struct object_id *oid,
 		       int flag UNUSED, void *cb_data UNUSED)
 {
 	struct object_id peeled;
 
-	if (!peel_iterated_oid(oid, &peeled) && obj_is_packed(&peeled))
+	if (!peel_iterated_oid(the_repository, oid, &peeled) && obj_is_packed(&peeled))
 		add_tag_chain(oid);
 	return 0;
 }
@@ -4064,6 +4076,7 @@ static void record_recent_commit(struct commit *commit, void *data UNUSED)
 }
 
 static int mark_bitmap_preferred_tip(const char *refname,
+				     const char *referent UNUSED,
 				     const struct object_id *oid,
 				     int flags UNUSED,
 				     void *data UNUSED)
@@ -4071,7 +4084,7 @@ static int mark_bitmap_preferred_tip(const char *refname,
 	struct object_id peeled;
 	struct object *object;
 
-	if (!peel_iterated_oid(oid, &peeled))
+	if (!peel_iterated_oid(the_repository, oid, &peeled))
 		oid = &peeled;
 
 	object = parse_object_or_die(oid, refname);
@@ -4091,7 +4104,9 @@ static void mark_bitmap_preferred_tips(void)
 		return;
 
 	for_each_string_list_item(item, preferred_tips) {
-		for_each_ref_in(item->string, mark_bitmap_preferred_tip, NULL);
+		refs_for_each_ref_in(get_main_ref_store(the_repository),
+				     item->string, mark_bitmap_preferred_tip,
+				     NULL);
 	}
 }
 
@@ -4396,6 +4411,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 		prepare_repo_settings(the_repository);
 		if (sparse < 0)
 			sparse = the_repository->settings.pack_use_sparse;
+		if (the_repository->settings.pack_use_multi_pack_reuse)
+			allow_pack_reuse = MULTI_PACK_REUSE;
 	}
 
 	reset_pack_idx_option(&pack_idx_opts);
@@ -4584,7 +4601,8 @@ int cmd_pack_objects(int argc, const char **argv, const char *prefix)
 	}
 	cleanup_preferred_base();
 	if (include_tag && nr_result)
-		for_each_tag_ref(add_ref_tag, NULL);
+		refs_for_each_tag_ref(get_main_ref_store(the_repository),
+				      add_ref_tag, NULL);
 	stop_progress(&progress_state);
 	trace2_region_leave("pack-objects", "enumerate-objects",
 			    the_repository);

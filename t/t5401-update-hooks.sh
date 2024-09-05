@@ -4,6 +4,8 @@
 #
 
 test_description='Test the update hook infrastructure.'
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 test_expect_success setup '
@@ -123,7 +125,7 @@ remote: STDOUT post-update
 remote: STDERR post-update
 EOF
 test_expect_success 'send-pack stderr contains hook messages' '
-	grep ^remote: send.err | sed "s/ *\$//" >actual &&
+	sed -n "/^remote:/s/ *\$//p" send.err >actual &&
 	test_cmp expect actual
 '
 

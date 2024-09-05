@@ -993,6 +993,16 @@ test_expect_success 'ensure bogus fetch.negotiationAlgorithm yields error' '
 		       fetch origin server_has both_have_2
 '
 
+test_expect_success 'fetch-pack with fsckObjects and keep-file does not segfault' '
+	rm -rf server client &&
+	test_create_repo server &&
+	test_commit -C server one &&
+
+	test_create_repo client &&
+	git -c fetch.fsckObjects=true \
+	    -C client fetch-pack -k -k ../server HEAD
+'
+
 test_expect_success 'filtering by size' '
 	rm -rf server client &&
 	test_create_repo server &&
@@ -1046,7 +1056,7 @@ fetch_filter_blob_limit_zero () {
 
 	# Ensure that commit is fetched, but blob is not
 	commit=$(git -C "$SERVER" rev-parse two) &&
-	blob=$(git hash-object server/two.t) &&
+	blob=$(git hash-object "$SERVER/two.t") &&
 	git -C client rev-list --objects --missing=allow-any "$commit" >oids &&
 	grep "$commit" oids &&
 	! grep "$blob" oids

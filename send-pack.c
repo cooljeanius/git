@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "commit.h"
@@ -73,6 +75,7 @@ static int pack_objects(int fd, struct ref *refs, struct oid_array *advertised,
 	int i;
 	int rc;
 
+	trace2_region_enter("send_pack", "pack_objects", the_repository);
 	strvec_push(&po.args, "pack-objects");
 	strvec_push(&po.args, "--all-progress-implied");
 	strvec_push(&po.args, "--revs");
@@ -144,8 +147,10 @@ static int pack_objects(int fd, struct ref *refs, struct oid_array *advertised,
 		 */
 		if (rc > 128 && rc != 141)
 			error("pack-objects died of signal %d", rc - 128);
+		trace2_region_leave("send_pack", "pack_objects", the_repository);
 		return -1;
 	}
+	trace2_region_leave("send_pack", "pack_objects", the_repository);
 	return 0;
 }
 
@@ -168,6 +173,7 @@ static int receive_status(struct packet_reader *reader, struct ref *refs)
 	int new_report = 0;
 	int once = 0;
 
+	trace2_region_enter("send_pack", "receive_status", the_repository);
 	hint = NULL;
 	ret = receive_unpack_status(reader);
 	while (1) {
@@ -259,13 +265,14 @@ static int receive_status(struct packet_reader *reader, struct ref *refs)
 			if (p)
 				hint->remote_status = xstrdup(p);
 			else
-				hint->remote_status = "failed";
+				hint->remote_status = xstrdup("failed");
 		} else {
 			hint->status = REF_STATUS_OK;
 			hint->remote_status = xstrdup_or_null(p);
 			new_report = 1;
 		}
 	}
+	trace2_region_leave("send_pack", "receive_status", the_repository);
 	return ret;
 }
 
@@ -425,16 +432,25 @@ static void get_commons_through_negotiation(const char *url,
 	struct child_process child = CHILD_PROCESS_INIT;
 	const struct ref *ref;
 	int len = the_hash_algo->hexsz + 1; /* hash + NL */
+	int nr_negotiation_tip = 0;
 
 	child.git_cmd = 1;
 	child.no_stdin = 1;
 	child.out = -1;
 	strvec_pushl(&child.args, "fetch", "--negotiate-only", NULL);
 	for (ref = remote_refs; ref; ref = ref->next) {
-		if (!is_null_oid(&ref->new_oid))
-			strvec_pushf(&child.args, "--negotiation-tip=%s", oid_to_hex(&ref->new_oid));
+		if (!is_null_oid(&ref->new_oid)) {
+			strvec_pushf(&child.args, "--negotiation-tip=%s",
+				     oid_to_hex(&ref->new_oid));
+			nr_negotiation_tip++;
+		}
 	}
 	strvec_push(&child.args, url);
+
+	if (!nr_negotiation_tip) {
+		child_process_clear(&child);
+		return;
+	}
 
 	if (start_command(&child))
 		die(_("send-pack: unable to fork off fetch subprocess"));
@@ -501,8 +517,11 @@ int send_pack(struct send_pack_args *args,
 	}
 
 	git_config_get_bool("push.negotiate", &push_negotiate);
-	if (push_negotiate)
+	if (push_negotiate) {
+		trace2_region_enter("send_pack", "push_negotiate", the_repository);
 		get_commons_through_negotiation(args->url, remote_refs, &commons);
+		trace2_region_leave("send_pack", "push_negotiate", the_repository);
+	}
 
 	if (!git_config_get_bool("push.usebitmaps", &use_bitmaps))
 		args->disable_bitmaps = !use_bitmaps;
@@ -630,10 +649,11 @@ int send_pack(struct send_pack_args *args,
 	/*
 	 * Finally, tell the other end!
 	 */
-	if (!args->dry_run && push_cert_nonce)
+	if (!args->dry_run && push_cert_nonce) {
 		cmds_sent = generate_push_cert(&req_buf, remote_refs, args,
 					       cap_buf.buf, push_cert_nonce);
-	else if (!args->dry_run)
+		trace2_printf("Generated push certificate");
+	} else if (!args->dry_run) {
 		for (ref = remote_refs; ref; ref = ref->next) {
 			char *old_hex, *new_hex;
 
@@ -653,6 +673,7 @@ int send_pack(struct send_pack_args *args,
 						 old_hex, new_hex, ref->name);
 			}
 		}
+	}
 
 	if (use_push_options) {
 		struct string_list_item *item;

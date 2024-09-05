@@ -1,6 +1,7 @@
 #ifndef SETUP_H
 #define SETUP_H
 
+#include "refs.h"
 #include "string-list.h"
 
 int is_inside_git_dir(void);
@@ -40,6 +41,18 @@ const char *read_gitfile_gently(const char *path, int *return_error_code);
 #define read_gitfile(path) read_gitfile_gently((path), NULL)
 const char *resolve_gitdir_gently(const char *suspect, int *return_error_code);
 #define resolve_gitdir(path) resolve_gitdir_gently((path), NULL)
+
+/*
+ * Check if a repository is safe and die if it is not, by verifying the
+ * ownership of the worktree (if any), the git directory, and the gitfile (if
+ * any).
+ *
+ * Exemptions for known-safe repositories can be added via `safe.directory`
+ * config settings; for non-bare repositories, their worktree needs to be
+ * added, for bare ones their git directory.
+ */
+void die_upon_dubious_ownership(const char *gitfile, const char *worktree,
+				const char *gitdir);
 
 void setup_work_tree(void);
 
@@ -115,7 +128,8 @@ struct repository_format {
 	int worktree_config;
 	int is_bare;
 	int hash_algo;
-	unsigned int ref_storage_format;
+	int compat_hash_algo;
+	enum ref_storage_format ref_storage_format;
 	int sparse_index;
 	char *work_tree;
 	struct string_list unknown_extensions;
@@ -171,19 +185,21 @@ int verify_repository_format(const struct repository_format *format,
  */
 void check_repository_format(struct repository_format *fmt);
 
+const char *get_template_dir(const char *option_template);
+
 #define INIT_DB_QUIET      (1 << 0)
 #define INIT_DB_EXIST_OK   (1 << 1)
 #define INIT_DB_SKIP_REFDB (1 << 2)
 
 int init_db(const char *git_dir, const char *real_git_dir,
 	    const char *template_dir, int hash_algo,
-	    unsigned int ref_storage_format,
+	    enum ref_storage_format ref_storage_format,
 	    const char *initial_branch, int init_shared_repository,
 	    unsigned int flags);
 void initialize_repository_version(int hash_algo,
-				   unsigned int ref_storage_format,
+				   enum ref_storage_format ref_storage_format,
 				   int reinit);
-void create_reference_database(unsigned int ref_storage_format,
+void create_reference_database(enum ref_storage_format ref_storage_format,
 			       const char *initial_branch, int quiet);
 
 /*

@@ -182,14 +182,10 @@ jobs:
         repository: 'microsoft/vcpkg'
         path: 'compat/vcbuild/vcpkg'
     - name: download vcpkg artifacts
-      shell: powershell
-      run: |
-        $urlbase = "https://dev.azure.com/git/git/_apis/build/builds"
-        $id = ((Invoke-WebRequest -UseBasicParsing "${urlbase}?definitions=9&statusFilter=completed&resultFilter=succeeded&`$top=1").content | ConvertFrom-JSON).value[0].id
-        $downloadUrl = ((Invoke-WebRequest -UseBasicParsing "${urlbase}/$id/artifacts").content | ConvertFrom-JSON).value[0].resource.downloadUrl
-        (New-Object Net.WebClient).DownloadFile($downloadUrl, "compat.zip")
-        Expand-Archive compat.zip -DestinationPath . -Force
-        Remove-Item compat.zip
+      uses: git-for-windows/get-azure-pipelines-artifact@v0
+      with:
+        repository: git/git
+        definitionId: 9
     - name: add msbuild to PATH
       uses: microsoft/setup-msbuild@v2
     - name: copy dlls to root
@@ -215,7 +211,7 @@ jobs:
     - name: zip up tracked files
       run: git archive -o artifacts/tracked.tar.gz HEAD
     - name: upload tracked files and build artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: vs-artifacts
         path: artifacts
@@ -270,6 +266,9 @@ jobs:
           - jobname: linux-sha256
             cc: clang
             pool: ubuntu-latest
+          - jobname: linux-reftable
+            cc: clang
+            pool: ubuntu-latest
           - jobname: linux-gcc
             cc: gcc
             cc_package: gcc-8
@@ -281,14 +280,27 @@ jobs:
           - jobname: osx-clang
             cc: clang
             pool: macos-13
+            env:
+              NO_SVN_TESTS: 1
+              NO_PERL: 1
+              NO_PYTHON: 1
+              NO_GITWEB: 1
+              NO_TCLTK: 1
+          - jobname: osx-reftable
+            cc: clang
+            pool: macos-13
+            env:
+              NO_SVN_TESTS: 1
           - jobname: osx-gcc
-            cc: gcc
-            cc_package: gcc-13
+            cc: gcc-13
             pool: macos-13
           - jobname: linux-gcc-default
             cc: gcc
             pool: ubuntu-latest
           - jobname: linux-leaks
+            cc: gcc
+            pool: ubuntu-latest
+          - jobname: linux-reftable-leaks
             cc: gcc
             pool: ubuntu-latest
           - jobname: linux-asan-ubsan
@@ -298,7 +310,7 @@ jobs:
       CC: ${{matrix.vector.cc}}
       CC_PACKAGE: ${{matrix.vector.cc_package}}
       jobname: ${{matrix.vector.jobname}}
-      runs_on_pool: ${{matrix.vector.pool}}
+      distro: ${{matrix.vector.pool}}
     runs-on: ${{matrix.vector.pool}}
     steps:
       - uses: actions/checkout@v4
@@ -343,26 +355,30 @@ jobs:
             image: fedora
     env:
       jobname: ${{matrix.vector.jobname}}
+      distro: ${{matrix.vector.distro}}
     runs-on: ubuntu-latest
     container: ${{matrix.vector.image}}
     steps:
     - uses: actions/checkout@v4
       if: matrix.vector.jobname != 'linux32'
-    - uses: actions/checkout@v1  # @dependabot ignore
+    # cannot be upgraded because Node.js Actions are unsupported in this container:
+    - uses: actions/checkout@v1 # @dependabot ignore
       if: matrix.vector.jobname == 'linux32'
-    - run: ci/install-docker-dependencies.sh
+    - run: ci/install-dependencies.sh
     - run: ci/run-build-and-tests.sh
     - name: print test failures
       if: failure() && env.FAILED_TEST_ARTIFACTS != ''
       run: ci/print-test-failures.sh
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != '' && matrix.vector.jobname != 'linux32'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: failed-tests-${{matrix.vector.jobname}}
         path: ${{env.FAILED_TEST_ARTIFACTS}}
     - name: Upload failed tests' directories
       if: failure() && env.FAILED_TEST_ARTIFACTS != '' && matrix.vector.jobname == 'linux32'
+      # supposedly cannot be upgraded from @v1, because Node.js Actions are unsupported
+      # in this container, but I dunno, updating to @v3 worked for me previously?
       uses: actions/upload-artifact@v3
       with:
         name: failed-tests-${{matrix.vector.jobname}}

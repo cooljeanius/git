@@ -31,6 +31,7 @@ sub usage {
 git send-email [<options>] <file|directory>
 git send-email [<options>] <format-patch options>
 git send-email --dump-aliases
+git send-email --translate-aliases
 
   Composing:
     --from                  <str>  * Email From:
@@ -99,6 +100,10 @@ git send-email --dump-aliases
 
   Information:
     --dump-aliases                 * Dump configured aliases and exit.
+    --translate-aliases            * Translate aliases read from standard
+                                     input according to the configured email
+                                     alias file(s), outputting the result to
+                                     standard output.
 
 EOT
 	exit(1);
@@ -212,6 +217,7 @@ my $format_patch;
 my $compose_filename;
 my $force = 0;
 my $dump_aliases = 0;
+my $translate_aliases = 0;
 
 # Variables to prevent short format-patch options from being captured
 # as abbreviated send-email options
@@ -476,11 +482,14 @@ my $git_completion_helper;
 my %dump_aliases_options = (
 	"h" => \$help,
 	"dump-aliases" => \$dump_aliases,
+	"translate-aliases" => \$translate_aliases,
 );
 $rc = GetOptions(%dump_aliases_options);
 usage() unless $rc;
 die __("--dump-aliases incompatible with other options\n")
-    if !$help and $dump_aliases and @ARGV;
+    if !$help and ($dump_aliases or $translate_aliases) and @ARGV;
+die __("--dump-aliases and --translate-aliases are mutually exclusive\n")
+    if !$help and $dump_aliases and $translate_aliases;
 my %options = (
 		    "sender|from=s" => \$sender,
 		    "in-reply-to=s" => \$initial_in_reply_to,
@@ -722,6 +731,16 @@ if (@alias_files and $aliasfiletype and defined $parse_alias{$aliasfiletype}) {
 if ($dump_aliases) {
     print "$_\n" for (sort keys %aliases);
     exit(0);
+}
+
+if ($translate_aliases) {
+	while (<STDIN>) {
+		my @addr_list = parse_address_line($_);
+		@addr_list = expand_aliases(@addr_list);
+		@addr_list = sanitize_address_list(@addr_list);
+		print "$_\n" for @addr_list;
+	}
+	exit(0);
 }
 
 # is_format_patch_arg($f) returns 0 if $f names a patch, or 1 if
@@ -1664,9 +1683,11 @@ EOF
 		$smtp->code =~ /250|200/ or die sprintf(__("Failed to send %s\n"), $subject).$smtp->message;
 	}
 	if ($quiet) {
-		printf($dry_run ? __("Dry-Sent %s\n") : __("Sent %s\n"), $subject);
+		printf($dry_run ? __("Dry-Sent %s") : __("Sent %s"), $subject);
+		print "\n";
 	} else {
-		print($dry_run ? __("Dry-OK. Log says:\n") : __("OK. Log says:\n"));
+		print($dry_run ? __("Dry-OK. Log says:") : __("OK. Log says:"));
+		print "\n";
 		if (!defined $sendmail_cmd && !file_name_is_absolute($smtp_server)) {
 			print "Server: $smtp_server\n";
 			print "MAIL FROM:<$raw_from>\n";
@@ -1686,10 +1707,11 @@ EOF
 		print $header, "\n";
 		if ($smtp) {
 			print __("Result: "), $smtp->code, ' ',
-				($smtp->message =~ /\n([^\n]+\n)$/s), "\n";
+				($smtp->message =~ /\n([^\n]+\n)$/s);
 		} else {
-			print __("Result: OK\n");
+			print __("Result: OK");
 		}
+		print "\n";
 	}
 
 	return 1;
@@ -1844,9 +1866,9 @@ sub pre_process_file {
 					$what, $_) unless $quiet;
 				next;
 			}
-			push @cc, $c;
+			push @cc, $sc;
 			printf(__("(body) Adding cc: %s from line '%s'\n"),
-				$c, $_) unless $quiet;
+				$sc, $_) unless $quiet;
 		}
 	}
 	close $fh;

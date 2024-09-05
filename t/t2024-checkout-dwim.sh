@@ -4,6 +4,7 @@ test_description='checkout <branch>
 
 Ensures that checkout on an unborn branch does what the user expects'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 # Is the current branch "refs/heads/$1"?
@@ -113,7 +114,7 @@ test_expect_success 'checkout of branch from multiple remotes fails with advice'
 	test_grep ! "^hint: " stderr
 '
 
-test_expect_success PERL 'checkout -p with multiple remotes does not print advice' '
+test_expect_success 'checkout -p with multiple remotes does not print advice' '
 	git checkout -B main &&
 	test_might_fail git branch -D foo &&
 

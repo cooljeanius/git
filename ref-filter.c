@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "environment.h"
 #include "gettext.h"
@@ -167,6 +169,7 @@ enum atom_type {
 	ATOM_ELSE,
 	ATOM_REST,
 	ATOM_AHEADBEHIND,
+	ATOM_ISBASE,
 };
 
 /*
@@ -740,8 +743,7 @@ static int person_name_atom_parser(struct ref_format *format UNUSED,
 	return 0;
 }
 
-static int email_atom_option_parser(struct used_atom *atom,
-				    const char **arg, struct strbuf *err)
+static int email_atom_option_parser(const char **arg)
 {
 	if (!*arg)
 		return EO_RAW;
@@ -759,7 +761,7 @@ static int person_email_atom_parser(struct ref_format *format UNUSED,
 				    const char *arg, struct strbuf *err)
 {
 	for (;;) {
-		int opt = email_atom_option_parser(atom, &arg, err);
+		int opt = email_atom_option_parser(&arg);
 		const char *bad_arg = arg;
 
 		if (opt < 0)
@@ -889,13 +891,32 @@ static int ahead_behind_atom_parser(struct ref_format *format,
 	return 0;
 }
 
+static int is_base_atom_parser(struct ref_format *format,
+			       struct used_atom *atom UNUSED,
+			       const char *arg, struct strbuf *err)
+{
+	struct string_list_item *item;
+
+	if (!arg)
+		return strbuf_addf_ret(err, -1, _("expected format: %%(is-base:<committish>)"));
+
+	item = string_list_append(&format->is_base_tips, arg);
+	item->util = lookup_commit_reference_by_name(arg);
+	if (!item->util)
+		die("failed to find '%s'", arg);
+
+	return 0;
+}
+
 static int head_atom_parser(struct ref_format *format UNUSED,
 			    struct used_atom *atom,
 			    const char *arg, struct strbuf *err)
 {
 	if (arg)
 		return err_no_arg(err, "HEAD");
-	atom->u.head = resolve_refdup("HEAD", RESOLVE_REF_READING, NULL, NULL);
+	atom->u.head = refs_resolve_refdup(get_main_ref_store(the_repository),
+					   "HEAD", RESOLVE_REF_READING, NULL,
+					   NULL);
 	return 0;
 }
 
@@ -952,6 +973,7 @@ static struct {
 	[ATOM_ELSE] = { "else", SOURCE_NONE },
 	[ATOM_REST] = { "rest", SOURCE_NONE, FIELD_STR, rest_atom_parser },
 	[ATOM_AHEADBEHIND] = { "ahead-behind", SOURCE_OTHER, FIELD_STR, ahead_behind_atom_parser },
+	[ATOM_ISBASE] = { "is-base", SOURCE_OTHER, FIELD_STR, is_base_atom_parser },
 	/*
 	 * Please update $__git_ref_fieldlist in git-completion.bash
 	 * when you add new atoms
@@ -1611,6 +1633,12 @@ static void grab_date(const char *buf, struct atom_value *v, const char *atomnam
 	if (formatp) {
 		formatp++;
 		parse_date_format(formatp, &date_mode);
+
+		/*
+		 * If this is a sort field and a format was specified, we'll
+		 * want to compare formatted date by string value.
+		 */
+		v->atom->type = FIELD_STR;
 	}
 
 	if (!eoemail)
@@ -1618,10 +1646,11 @@ static void grab_date(const char *buf, struct atom_value *v, const char *atomnam
 	timestamp = parse_timestamp(eoemail + 2, &zone, 10);
 	if (timestamp == TIME_MAX)
 		goto bad;
+	errno = 0;
 	tz = strtol(zone, NULL, 10);
 	if ((tz == LONG_MIN || tz == LONG_MAX) && errno == ERANGE)
 		goto bad;
-	v->s = xstrdup(show_date(timestamp, tz, &date_mode));
+	v->s = xstrdup(show_date(timestamp, tz, date_mode));
 	v->value = timestamp;
 	date_mode_release(&date_mode);
 	return;
@@ -1985,7 +2014,7 @@ static void grab_sub_body_contents(struct atom_value *val, int deref, struct exp
 			struct strbuf s = STRBUF_INIT;
 
 			/* Format the trailer info according to the trailer_opts given */
-			format_trailers_from_commit(&s, subpos, &atom->u.contents.trailer_opts);
+			format_trailers_from_commit(&atom->u.contents.trailer_opts, subpos, &s);
 
 			v->s = strbuf_detach(&s, NULL);
 		} else if (atom->u.contents.option == C_BARE)
@@ -2129,7 +2158,9 @@ static const char *rstrip_ref_components(const char *refname, int len)
 static const char *show_ref(struct refname_atom *atom, const char *refname)
 {
 	if (atom->option == R_SHORT)
-		return shorten_unambiguous_ref(refname, warn_ambiguous_refs);
+		return refs_shorten_unambiguous_ref(get_main_ref_store(the_repository),
+						    refname,
+						    warn_ambiguous_refs);
 	else if (atom->option == R_LSTRIP)
 		return lstrip_ref_components(refname, atom->lstrip);
 	else if (atom->option == R_RSTRIP)
@@ -2328,12 +2359,21 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 	int i;
 	struct object_info empty = OBJECT_INFO_INIT;
 	int ahead_behind_atoms = 0;
+	int is_base_atoms = 0;
 
 	CALLOC_ARRAY(ref->value, used_atom_cnt);
 
+	/**
+	 * NEEDSWORK: The following code might be unncessary if all codepaths
+	 * that call populate_value() populates the symref member of ref_array_item
+	 * like in apply_ref_filter(). Currently pretty_print_ref() is the only codepath
+	 * that calls populate_value() without first populating symref.
+	 */
 	if (need_symref && (ref->flag & REF_ISSYMREF) && !ref->symref) {
-		ref->symref = resolve_refdup(ref->refname, RESOLVE_REF_READING,
-					     NULL, NULL);
+		ref->symref = refs_resolve_refdup(get_main_ref_store(the_repository),
+						  ref->refname,
+						  RESOLVE_REF_READING,
+						  NULL, NULL);
 		if (!ref->symref)
 			ref->symref = xstrdup("");
 	}
@@ -2469,6 +2509,15 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 				v->s = xstrdup("");
 			}
 			continue;
+		} else if (atom_type == ATOM_ISBASE) {
+			if (ref->is_base && ref->is_base[is_base_atoms]) {
+				v->s = xstrfmt("(%s)", ref->is_base[is_base_atoms]);
+				free(ref->is_base[is_base_atoms]);
+			} else {
+				v->s = xstrdup("");
+			}
+			is_base_atoms++;
+			continue;
 		} else
 			continue;
 
@@ -2508,7 +2557,7 @@ static int populate_value(struct ref_array_item *ref, struct strbuf *err)
 	 * If it is a tag object, see if we use the peeled value. If we do,
 	 * grab the peeled OID.
 	 */
-	if (need_tagged && peel_iterated_oid(&obj->oid, &oi_deref.oid))
+	if (need_tagged && peel_iterated_oid(the_repository, &obj->oid, &oi_deref.oid))
 		die("bad tag");
 
 	return get_object(ref, 1, &obj, &oi_deref, err);
@@ -2622,13 +2671,20 @@ static int for_each_fullref_in_pattern(struct ref_filter *filter,
 				       each_ref_fn cb,
 				       void *cb_data)
 {
+	if (filter->kind & FILTER_REFS_ROOT_REFS) {
+		/* In this case, we want to print all refs including root refs. */
+		return refs_for_each_include_root_refs(get_main_ref_store(the_repository),
+						       cb, cb_data);
+	}
+
 	if (!filter->match_as_path) {
 		/*
 		 * in this case, the patterns are applied after
 		 * prefixes like "refs/heads/" etc. are stripped off,
 		 * so we have to look at everything:
 		 */
-		return for_each_fullref_in("", cb, cb_data);
+		return refs_for_each_fullref_in(get_main_ref_store(the_repository),
+						"", NULL, cb, cb_data);
 	}
 
 	if (filter->ignore_case) {
@@ -2637,7 +2693,8 @@ static int for_each_fullref_in_pattern(struct ref_filter *filter,
 		 * so just return everything and let the caller
 		 * sort it out.
 		 */
-		return for_each_fullref_in("", cb, cb_data);
+		return refs_for_each_fullref_in(get_main_ref_store(the_repository),
+						"", NULL, cb, cb_data);
 	}
 
 	if (!filter->name_patterns[0]) {
@@ -2744,6 +2801,11 @@ static int ref_kind_from_refname(const char *refname)
 			return ref_kind[i].kind;
 	}
 
+	if (is_pseudo_ref(refname))
+		return FILTER_REFS_PSEUDOREFS;
+	if (is_root_ref(refname))
+		return FILTER_REFS_ROOT_REFS;
+
 	return FILTER_REFS_OTHERS;
 }
 
@@ -2756,7 +2818,7 @@ static int filter_ref_kind(struct ref_filter *filter, const char *refname)
 	return ref_kind_from_refname(refname);
 }
 
-static struct ref_array_item *apply_ref_filter(const char *refname, const struct object_id *oid,
+static struct ref_array_item *apply_ref_filter(const char *refname, const char *referent, const struct object_id *oid,
 			    int flag, struct ref_filter *filter)
 {
 	struct ref_array_item *ref;
@@ -2775,7 +2837,16 @@ static struct ref_array_item *apply_ref_filter(const char *refname, const struct
 
 	/* Obtain the current ref kind from filter_ref_kind() and ignore unwanted refs. */
 	kind = filter_ref_kind(filter, refname);
-	if (!(kind & filter->kind))
+
+	/*
+	 * Generally HEAD refs are printed with special description denoting a rebase,
+	 * detached state and so forth. This is useful when only printing the HEAD ref
+	 * But when it is being printed along with other root refs, it makes sense to
+	 * keep the formatting consistent. So we mask the type to act like a root ref.
+	 */
+	if (filter->kind & FILTER_REFS_ROOT_REFS && kind == FILTER_REFS_DETACHED_HEAD)
+		kind = FILTER_REFS_ROOT_REFS;
+	else if (!(kind & filter->kind))
 		return NULL;
 
 	if (!filter_pattern_match(filter, refname))
@@ -2816,6 +2887,7 @@ static struct ref_array_item *apply_ref_filter(const char *refname, const struct
 	ref->commit = commit;
 	ref->flag = flag;
 	ref->kind = kind;
+	ref->symref = xstrdup_or_null(referent);
 
 	return ref;
 }
@@ -2829,12 +2901,12 @@ struct ref_filter_cbdata {
  * A call-back given to for_each_ref().  Filter refs and keep them for
  * later object processing.
  */
-static int filter_one(const char *refname, const struct object_id *oid, int flag, void *cb_data)
+static int filter_one(const char *refname, const char *referent, const struct object_id *oid, int flag, void *cb_data)
 {
 	struct ref_filter_cbdata *ref_cbdata = cb_data;
 	struct ref_array_item *ref;
 
-	ref = apply_ref_filter(refname, oid, flag, ref_cbdata->filter);
+	ref = apply_ref_filter(refname, referent, oid, flag, ref_cbdata->filter);
 	if (ref)
 		ref_array_append(ref_cbdata->array, ref);
 
@@ -2852,6 +2924,7 @@ static void free_array_item(struct ref_array_item *item)
 		free(item->value);
 	}
 	free(item->counts);
+	free(item->is_base);
 	free(item);
 }
 
@@ -2864,13 +2937,13 @@ struct ref_filter_and_format_cbdata {
 	} internal;
 };
 
-static int filter_and_format_one(const char *refname, const struct object_id *oid, int flag, void *cb_data)
+static int filter_and_format_one(const char *refname, const char *referent, const struct object_id *oid, int flag, void *cb_data)
 {
 	struct ref_filter_and_format_cbdata *ref_cbdata = cb_data;
 	struct ref_array_item *ref;
 	struct strbuf output = STRBUF_INIT, err = STRBUF_INIT;
 
-	ref = apply_ref_filter(refname, oid, flag, ref_cbdata->filter);
+	ref = apply_ref_filter(refname, referent, oid, flag, ref_cbdata->filter);
 	if (!ref)
 		return 0;
 
@@ -3016,6 +3089,49 @@ void filter_ahead_behind(struct repository *r,
 	free(commits);
 }
 
+void filter_is_base(struct repository *r,
+		    struct ref_format *format,
+		    struct ref_array *array)
+{
+	struct commit **bases;
+	size_t bases_nr = 0;
+	struct ref_array_item **back_index;
+
+	if (!format->is_base_tips.nr || !array->nr)
+		return;
+
+	CALLOC_ARRAY(back_index, array->nr);
+	CALLOC_ARRAY(bases, array->nr);
+
+	for (size_t i = 0; i < array->nr; i++) {
+		const char *name = array->items[i]->refname;
+		struct commit *c = lookup_commit_reference_by_name_gently(name, 1);
+
+		CALLOC_ARRAY(array->items[i]->is_base, format->is_base_tips.nr);
+
+		if (!c)
+			continue;
+
+		back_index[bases_nr] = array->items[i];
+		bases[bases_nr] = c;
+		bases_nr++;
+	}
+
+	for (size_t i = 0; i < format->is_base_tips.nr; i++) {
+		struct commit *tip = format->is_base_tips.items[i].util;
+		int base_index = get_branch_base_for_tip(r, tip, bases, bases_nr);
+
+		if (base_index < 0)
+			continue;
+
+		/* Store the string for use in output later. */
+		back_index[base_index]->is_base[i] = xstrdup(format->is_base_tips.items[i].string);
+	}
+
+	free(back_index);
+	free(bases);
+}
+
 static int do_filter_refs(struct ref_filter *filter, unsigned int type, each_ref_fn fn, void *cb_data)
 {
 	int ret = 0;
@@ -3036,15 +3152,28 @@ static int do_filter_refs(struct ref_filter *filter, unsigned int type, each_ref
 		 * of filter_ref_kind().
 		 */
 		if (filter->kind == FILTER_REFS_BRANCHES)
-			ret = for_each_fullref_in("refs/heads/", fn, cb_data);
+			ret = refs_for_each_fullref_in(get_main_ref_store(the_repository),
+						       "refs/heads/", NULL,
+						       fn, cb_data);
 		else if (filter->kind == FILTER_REFS_REMOTES)
-			ret = for_each_fullref_in("refs/remotes/", fn, cb_data);
+			ret = refs_for_each_fullref_in(get_main_ref_store(the_repository),
+						       "refs/remotes/", NULL,
+						       fn, cb_data);
 		else if (filter->kind == FILTER_REFS_TAGS)
-			ret = for_each_fullref_in("refs/tags/", fn, cb_data);
-		else if (filter->kind & FILTER_REFS_ALL)
+			ret = refs_for_each_fullref_in(get_main_ref_store(the_repository),
+						       "refs/tags/", NULL, fn,
+						       cb_data);
+		else if (filter->kind & FILTER_REFS_REGULAR)
 			ret = for_each_fullref_in_pattern(filter, fn, cb_data);
-		if (!ret && (filter->kind & FILTER_REFS_DETACHED_HEAD))
-			head_ref(fn, cb_data);
+
+		/*
+		 * When printing all ref types, HEAD is already included,
+		 * so we don't want to print HEAD again.
+		 */
+		if (!ret && !(filter->kind & FILTER_REFS_ROOT_REFS) &&
+		    (filter->kind & FILTER_REFS_DETACHED_HEAD))
+			refs_head_ref(get_main_ref_store(the_repository), fn,
+				      cb_data);
 	}
 
 	clear_contains_cache(&filter->internal.contains_cache);
@@ -3096,7 +3225,8 @@ static inline int can_do_iterative_format(struct ref_filter *filter,
 	return !(filter->reachable_from ||
 		 filter->unreachable_from ||
 		 sorting ||
-		 format->bases.nr);
+		 format->bases.nr ||
+		 format->is_base_tips.nr);
 }
 
 void filter_and_format_refs(struct ref_filter *filter, unsigned int type,
@@ -3120,6 +3250,7 @@ void filter_and_format_refs(struct ref_filter *filter, unsigned int type,
 		struct ref_array array = { 0 };
 		filter_refs(&array, filter, type);
 		filter_ahead_behind(the_repository, format, &array);
+		filter_is_base(the_repository, format, &array);
 		ref_array_sort(sorting, &array);
 		print_formatted_ref_array(&array, format);
 		ref_array_clear(&array);

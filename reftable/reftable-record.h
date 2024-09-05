@@ -9,7 +9,7 @@ https://developers.google.com/open-source/licenses/bsd
 #ifndef REFTABLE_RECORD_H
 #define REFTABLE_RECORD_H
 
-#include "hash-ll.h"
+#include "hash.h"
 #include <stdint.h>
 
 /*
@@ -22,6 +22,7 @@ https://developers.google.com/open-source/licenses/bsd
 /* reftable_ref_record holds a ref database entry target_value */
 struct reftable_ref_record {
 	char *refname; /* Name of the ref, malloced. */
+	size_t refname_cap;
 	uint64_t update_index; /* Logical timestamp at which this value is
 				* written */
 
@@ -59,10 +60,6 @@ const unsigned char *reftable_ref_record_val2(const struct reftable_ref_record *
 /* returns whether 'ref' represents a deletion */
 int reftable_ref_record_is_deletion(const struct reftable_ref_record *ref);
 
-/* prints a reftable_ref_record onto stdout. Useful for debugging. */
-void reftable_ref_record_print(const struct reftable_ref_record *ref,
-			       uint32_t hash_id);
-
 /* frees and nulls all pointer values inside `ref`. */
 void reftable_ref_record_release(struct reftable_ref_record *ref);
 
@@ -73,6 +70,7 @@ int reftable_ref_record_equal(const struct reftable_ref_record *a,
 /* reftable_log_record holds a reflog entry */
 struct reftable_log_record {
 	char *refname;
+	size_t refname_cap;
 	uint64_t update_index; /* logical timestamp of a transactional update.
 				*/
 
@@ -87,13 +85,14 @@ struct reftable_log_record {
 
 	union {
 		struct {
-			uint8_t *new_hash;
-			uint8_t *old_hash;
+			unsigned char new_hash[GIT_MAX_RAWSZ];
+			unsigned char old_hash[GIT_MAX_RAWSZ];
 			char *name;
 			char *email;
 			uint64_t time;
 			int16_t tz_offset;
 			char *message;
+			size_t message_cap;
 		} update;
 	} value;
 };
@@ -107,9 +106,5 @@ void reftable_log_record_release(struct reftable_log_record *log);
 /* returns whether two records are equal. Useful for testing. */
 int reftable_log_record_equal(const struct reftable_log_record *a,
 			      const struct reftable_log_record *b, int hash_size);
-
-/* dumps a reftable_log_record on stdout, for debugging/testing. */
-void reftable_log_record_print(struct reftable_log_record *log,
-			       uint32_t hash_id);
 
 #endif

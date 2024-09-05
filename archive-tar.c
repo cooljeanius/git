@@ -1,6 +1,9 @@
 /*
  * Copyright (c) 2005, 2006 Rene Scharfe
  */
+
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "gettext.h"
@@ -365,7 +368,7 @@ static struct archiver *find_tar_filter(const char *name, size_t len)
 	int i;
 	for (i = 0; i < nr_tar_filters; i++) {
 		struct archiver *ar = tar_filters[i];
-		if (!strncmp(ar->name, name, len) && !ar->name[len])
+		if (!xstrncmpz(ar->name, name, len))
 			return ar;
 	}
 	return NULL;

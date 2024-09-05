@@ -196,6 +196,11 @@ int is_executable(const char *name);
 int exists_in_PATH(const char *command);
 
 /**
+ * Return the path that is used to execute Unix shell command-lines.
+ */
+char *git_shell_path(void);
+
+/**
  * Start a sub-process. Takes a pointer to a `struct child_process`
  * that specifies the details and returns pipe FDs (if requested).
  * See below for details.
@@ -216,6 +221,13 @@ int finish_command_in_signal(struct child_process *);
  * to a `struct child_process` that specifies the details.
  */
 int run_command(struct child_process *);
+
+/*
+ * Prepare a `struct child_process` to run auto-maintenance. Returns 1 if the
+ * process has been prepared and is ready to run, or 0 in case auto-maintenance
+ * should be skipped.
+ */
+int prepare_auto_maintenance(int quiet, struct child_process *maint);
 
 /*
  * Trigger an auto-gc

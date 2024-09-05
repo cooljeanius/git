@@ -1,4 +1,3 @@
-#define USE_THE_INDEX_VARIABLE
 #include "builtin.h"
 #include "config.h"
 #include "diff.h"
@@ -9,6 +8,7 @@
 #include "read-cache-ll.h"
 #include "repository.h"
 #include "revision.h"
+#include "tmp-objdir.h"
 #include "tree.h"
 
 static struct rev_info log_tree_opt;
@@ -167,6 +167,13 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 
 	opt->diffopt.rotate_to_strict = 1;
 
+	if (opt->remerge_diff) {
+		opt->remerge_objdir = tmp_objdir_create("remerge-diff");
+		if (!opt->remerge_objdir)
+			die(_("unable to create temporary object directory"));
+		tmp_objdir_replace_primary_odb(opt->remerge_objdir, 1);
+	}
+
 	/*
 	 * NOTE!  We expect "a..b" to expand to "^a b" but it is
 	 * perfectly valid for revision range parser to yield "b ^a",
@@ -206,7 +213,7 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 		opt->diffopt.rotate_to_strict = 0;
 		opt->diffopt.no_free = 1;
 		if (opt->diffopt.detect_rename) {
-			if (!the_index.cache)
+			if (the_repository->index->cache)
 				repo_read_index(the_repository);
 			opt->diffopt.setup |= DIFF_SETUP_USE_SIZE_CACHE;
 		}
@@ -229,6 +236,11 @@ int cmd_diff_tree(int argc, const char **argv, const char *prefix)
 		opt->diffopt.needed_rename_limit = saved_nrl;
 		opt->diffopt.no_free = 0;
 		diff_free(&opt->diffopt);
+	}
+
+	if (opt->remerge_diff) {
+		tmp_objdir_destroy(opt->remerge_objdir);
+		opt->remerge_objdir = NULL;
 	}
 
 	return diff_result_code(&opt->diffopt);

@@ -11,14 +11,45 @@ https://developers.google.com/open-source/licenses/bsd
 #include "system.h"
 
 #include "block.h"
-#include "generic.h"
 #include "constants.h"
 #include "reader.h"
 #include "reftable-error.h"
 
-int iterator_is_null(struct reftable_iterator *it)
+int iterator_seek(struct reftable_iterator *it, struct reftable_record *want)
 {
-	return !it->ops;
+	return it->ops->seek(it->iter_arg, want);
+}
+
+int iterator_next(struct reftable_iterator *it, struct reftable_record *rec)
+{
+	return it->ops->next(it->iter_arg, rec);
+}
+
+static int empty_iterator_seek(void *arg UNUSED, struct reftable_record *want UNUSED)
+{
+	return 0;
+}
+
+static int empty_iterator_next(void *arg UNUSED, struct reftable_record *rec UNUSED)
+{
+	return 1;
+}
+
+static void empty_iterator_close(void *arg UNUSED)
+{
+}
+
+static struct reftable_iterator_vtable empty_vtable = {
+	.seek = &empty_iterator_seek,
+	.next = &empty_iterator_next,
+	.close = &empty_iterator_close,
+};
+
+void iterator_set_empty(struct reftable_iterator *it)
+{
+	assert(!it->ops);
+	it->iter_arg = NULL;
+	it->ops = &empty_vtable;
 }
 
 static void filtering_ref_iterator_close(void *iter_arg)
@@ -26,6 +57,13 @@ static void filtering_ref_iterator_close(void *iter_arg)
 	struct filtering_ref_iterator *fri = iter_arg;
 	strbuf_release(&fri->oid);
 	reftable_iterator_destroy(&fri->it);
+}
+
+static int filtering_ref_iterator_seek(void *iter_arg,
+				       struct reftable_record *want)
+{
+	struct filtering_ref_iterator *fri = iter_arg;
+	return iterator_seek(&fri->it, want);
 }
 
 static int filtering_ref_iterator_next(void *iter_arg,
@@ -38,26 +76,6 @@ static int filtering_ref_iterator_next(void *iter_arg,
 		err = reftable_iterator_next_ref(&fri->it, ref);
 		if (err != 0) {
 			break;
-		}
-
-		if (fri->double_check) {
-			struct reftable_iterator it = { NULL };
-
-			err = reftable_table_seek_ref(&fri->tab, &it,
-						      ref->refname);
-			if (err == 0) {
-				err = reftable_iterator_next_ref(&it, ref);
-			}
-
-			reftable_iterator_destroy(&it);
-
-			if (err < 0) {
-				break;
-			}
-
-			if (err > 0) {
-				continue;
-			}
 		}
 
 		if (ref->value_type == REFTABLE_REF_VAL2 &&
@@ -78,6 +96,7 @@ static int filtering_ref_iterator_next(void *iter_arg,
 }
 
 static struct reftable_iterator_vtable filtering_ref_iterator_vtable = {
+	.seek = &filtering_ref_iterator_seek,
 	.next = &filtering_ref_iterator_next,
 	.close = &filtering_ref_iterator_close,
 };
@@ -120,8 +139,15 @@ static int indexed_table_ref_iter_next_block(struct indexed_table_ref_iter *it)
 		/* indexed block does not exist. */
 		return REFTABLE_FORMAT_ERROR;
 	}
-	block_reader_start(&it->block_reader, &it->cur);
+	block_iter_seek_start(&it->cur, &it->block_reader);
 	return 0;
+}
+
+static int indexed_table_ref_iter_seek(void *p UNUSED,
+				       struct reftable_record *want UNUSED)
+{
+	BUG("seeking indexed table is not supported");
+	return -1;
 }
 
 static int indexed_table_ref_iter_next(void *p, struct reftable_record *rec)
@@ -160,8 +186,7 @@ int new_indexed_table_ref_iter(struct indexed_table_ref_iter **dest,
 			       int oid_len, uint64_t *offsets, int offset_len)
 {
 	struct indexed_table_ref_iter empty = INDEXED_TABLE_REF_ITER_INIT;
-	struct indexed_table_ref_iter *itr =
-		reftable_calloc(sizeof(struct indexed_table_ref_iter));
+	struct indexed_table_ref_iter *itr = reftable_calloc(1, sizeof(*itr));
 	int err = 0;
 
 	*itr = empty;
@@ -181,6 +206,7 @@ int new_indexed_table_ref_iter(struct indexed_table_ref_iter **dest,
 }
 
 static struct reftable_iterator_vtable indexed_table_ref_iter_vtable = {
+	.seek = &indexed_table_ref_iter_seek,
 	.next = &indexed_table_ref_iter_next,
 	.close = &indexed_table_ref_iter_close,
 };
@@ -191,4 +217,72 @@ void iterator_from_indexed_table_ref_iter(struct reftable_iterator *it,
 	assert(!it->ops);
 	it->iter_arg = itr;
 	it->ops = &indexed_table_ref_iter_vtable;
+}
+
+void reftable_iterator_destroy(struct reftable_iterator *it)
+{
+	if (!it->ops)
+		return;
+	it->ops->close(it->iter_arg);
+	it->ops = NULL;
+	FREE_AND_NULL(it->iter_arg);
+}
+
+int reftable_iterator_seek_ref(struct reftable_iterator *it,
+			       const char *name)
+{
+	struct reftable_record want = {
+		.type = BLOCK_TYPE_REF,
+		.u.ref = {
+			.refname = (char *)name,
+		},
+	};
+	return it->ops->seek(it->iter_arg, &want);
+}
+
+int reftable_iterator_next_ref(struct reftable_iterator *it,
+			       struct reftable_ref_record *ref)
+{
+	struct reftable_record rec = {
+		.type = BLOCK_TYPE_REF,
+		.u = {
+			.ref = *ref
+		},
+	};
+	int err = iterator_next(it, &rec);
+	*ref = rec.u.ref;
+	return err;
+}
+
+int reftable_iterator_seek_log_at(struct reftable_iterator *it,
+				  const char *name, uint64_t update_index)
+{
+	struct reftable_record want = {
+		.type = BLOCK_TYPE_LOG,
+		.u.log = {
+			.refname = (char *)name,
+			.update_index = update_index,
+		},
+	};
+	return it->ops->seek(it->iter_arg, &want);
+}
+
+int reftable_iterator_seek_log(struct reftable_iterator *it,
+			       const char *name)
+{
+	return reftable_iterator_seek_log_at(it, name, ~((uint64_t) 0));
+}
+
+int reftable_iterator_next_log(struct reftable_iterator *it,
+			       struct reftable_log_record *log)
+{
+	struct reftable_record rec = {
+		.type = BLOCK_TYPE_LOG,
+		.u = {
+			.log = *log,
+		},
+	};
+	int err = iterator_next(it, &rec);
+	*log = rec.u.log;
+	return err;
 }

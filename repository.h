@@ -1,6 +1,8 @@
 #ifndef REPOSITORY_H
 #define REPOSITORY_H
 
+#include "strmap.h"
+
 struct config_set;
 struct fsmonitor_settings;
 struct git_hash_algo;
@@ -24,21 +26,25 @@ enum fetch_negotiation_setting {
 	FETCH_NEGOTIATION_NOOP,
 };
 
-#define REF_STORAGE_FORMAT_UNKNOWN 0
-#define REF_STORAGE_FORMAT_FILES   1
+enum ref_storage_format {
+	REF_STORAGE_FORMAT_UNKNOWN,
+	REF_STORAGE_FORMAT_FILES,
+	REF_STORAGE_FORMAT_REFTABLE,
+};
 
 struct repo_settings {
 	int initialized;
 
 	int core_commit_graph;
 	int commit_graph_generation_version;
-	int commit_graph_read_changed_paths;
+	int commit_graph_changed_paths_version;
 	int gc_write_commit_graph;
 	int fetch_write_commit_graph;
 	int command_requires_full_index;
 	int sparse_index;
 	int pack_read_reverse_index;
 	int pack_use_bitmap_boundary_traversal;
+	int pack_use_multi_pack_reuse;
 
 	/*
 	 * Does this repository have core.useReplaceRefs=true (on by
@@ -107,6 +113,18 @@ struct repository {
 	struct ref_store *refs_private;
 
 	/*
+	 * A strmap of ref_stores, stored by submodule name, accessible via
+	 * `repo_get_submodule_ref_store()`.
+	 */
+	struct strmap submodule_ref_stores;
+
+	/*
+	 * A strmap of ref_stores, stored by worktree id, accessible via
+	 * `get_worktree_ref_store()`.
+	 */
+	struct strmap worktree_ref_stores;
+
+	/*
 	 * Contains path to often used file names.
 	 */
 	struct repo_path_cache cached_paths;
@@ -161,8 +179,11 @@ struct repository {
 	/* Repository's current hash algorithm, as serialized on disk. */
 	const struct git_hash_algo *hash_algo;
 
+	/* Repository's compatibility hash algorithm. */
+	const struct git_hash_algo *compat_hash_algo;
+
 	/* Repository's reference storage format, as serialized on disk. */
-	unsigned int ref_storage_format;
+	enum ref_storage_format ref_storage_format;
 
 	/* A unique-id for tracing purposes. */
 	int trace2_repo_id;
@@ -181,9 +202,8 @@ struct repository {
 	unsigned different_commondir:1;
 };
 
+#ifdef USE_THE_REPOSITORY_VARIABLE
 extern struct repository *the_repository;
-#ifdef USE_THE_INDEX_VARIABLE
-extern struct index_state the_index;
 #endif
 
 /*
@@ -203,8 +223,10 @@ void repo_set_gitdir(struct repository *repo, const char *root,
 		     const struct set_gitdir_args *extra_args);
 void repo_set_worktree(struct repository *repo, const char *path);
 void repo_set_hash_algo(struct repository *repo, int algo);
-void repo_set_ref_storage_format(struct repository *repo, unsigned int format);
-void initialize_the_repository(void);
+void repo_set_compat_hash_algo(struct repository *repo, int compat_algo);
+void repo_set_ref_storage_format(struct repository *repo,
+				 enum ref_storage_format format);
+void initialize_repository(struct repository *repo);
 RESULT_MUST_BE_USED
 int repo_init(struct repository *r, const char *gitdir, const char *worktree);
 

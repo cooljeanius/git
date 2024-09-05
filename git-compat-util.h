@@ -218,6 +218,18 @@ struct strbuf;
 #define GIT_WINDOWS_NATIVE
 #endif
 
+#if defined(NO_UNIX_SOCKETS) || !defined(GIT_WINDOWS_NATIVE)
+static inline int _have_unix_sockets(void)
+{
+#if defined(NO_UNIX_SOCKETS)
+	return 0;
+#else
+	return 1;
+#endif
+}
+#define have_unix_sockets _have_unix_sockets
+#endif
+
 #include <unistd.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -391,6 +403,7 @@ char *gitdirname(char *);
 
 #ifndef NO_OPENSSL
 #ifdef __APPLE__
+#undef __AVAILABILITY_MACROS_USES_AVAILABILITY
 #define __AVAILABILITY_MACROS_USES_AVAILABILITY 0
 #include <AvailabilityMacros.h>
 #undef DEPRECATED_ATTRIBUTE
@@ -491,6 +504,14 @@ static inline int git_offset_1st_component(const char *path)
 	return is_dir_sep(path[0]);
 }
 #define offset_1st_component git_offset_1st_component
+#endif
+
+#ifndef fspathcmp
+#define fspathcmp git_fspathcmp
+#endif
+
+#ifndef fspathncmp
+#define fspathncmp git_fspathncmp
 #endif
 
 #ifndef is_valid_path

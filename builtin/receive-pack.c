@@ -88,7 +88,7 @@ static struct strbuf push_cert = STRBUF_INIT;
 static struct object_id push_cert_oid;
 static struct signature_check sigcheck;
 static const char *push_cert_nonce;
-static const char *cert_nonce_seed;
+static char *cert_nonce_seed;
 static struct strvec hidden_refs = STRVEC_INIT;
 
 static const char *NONCE_UNSOLICITED = "UNSOLICITED";
@@ -168,13 +168,13 @@ static int receive_pack_config(const char *var, const char *value,
 	}
 
 	if (strcmp(var, "receive.fsck.skiplist") == 0) {
-		const char *path;
+		char *path;
 
 		if (git_config_pathname(&path, var, value))
 			return 1;
 		strbuf_addf(&fsck_msg_types, "%cskiplist=%s",
 			fsck_msg_types.len ? ',' : '=', path);
-		free((char *)path);
+		free(path);
 		return 0;
 	}
 
@@ -300,7 +300,7 @@ static void show_ref(const char *path, const struct object_id *oid)
 	}
 }
 
-static int show_ref_cb(const char *path_full, const struct object_id *oid,
+static int show_ref_cb(const char *path_full, const char *referent UNUSED, const struct object_id *oid,
 		       int flag UNUSED, void *data)
 {
 	struct oidset *seen = data;
@@ -593,21 +593,6 @@ static char *prepare_push_cert_nonce(const char *path, timestamp_t stamp)
 	return strbuf_detach(&buf, NULL);
 }
 
-static char *find_header(const char *msg, size_t len, const char *key,
-			 const char **next_line)
-{
-	size_t out_len;
-	const char *val = find_header_mem(msg, len, key, &out_len);
-
-	if (!val)
-		return NULL;
-
-	if (next_line)
-		*next_line = val + out_len + 1;
-
-	return xmemdupz(val, out_len);
-}
-
 /*
  * Return zero if a and b are equal up to n bytes and nonzero if they are not.
  * This operation is guaranteed to run in constant time to avoid leaking data.
@@ -622,13 +607,14 @@ static int constant_memequal(const char *a, const char *b, size_t n)
 	return res;
 }
 
-static const char *check_nonce(const char *buf, size_t len)
+static const char *check_nonce(const char *buf)
 {
-	char *nonce = find_header(buf, len, "nonce", NULL);
+	size_t noncelen;
+	const char *found = find_commit_header(buf, "nonce", &noncelen);
+	char *nonce = found ? xmemdupz(found, noncelen) : NULL;
 	timestamp_t stamp, ostamp;
 	char *bohmac, *expect = NULL;
 	const char *retval = NONCE_BAD;
-	size_t noncelen;
 
 	if (!nonce) {
 		retval = NONCE_MISSING;
@@ -670,7 +656,6 @@ static const char *check_nonce(const char *buf, size_t len)
 		goto leave;
 	}
 
-	noncelen = strlen(nonce);
 	expect = prepare_push_cert_nonce(service_dir, stamp);
 	if (noncelen != strlen(expect)) {
 		/* This is not even the right size. */
@@ -718,35 +703,28 @@ leave:
 static int check_cert_push_options(const struct string_list *push_options)
 {
 	const char *buf = push_cert.buf;
-	int len = push_cert.len;
 
-	char *option;
-	const char *next_line;
+	const char *option;
+	size_t optionlen;
 	int options_seen = 0;
 
 	int retval = 1;
 
-	if (!len)
+	if (!*buf)
 		return 1;
 
-	while ((option = find_header(buf, len, "push-option", &next_line))) {
-		len -= (next_line - buf);
-		buf = next_line;
+	while ((option = find_commit_header(buf, "push-option", &optionlen))) {
+		buf = option + optionlen + 1;
 		options_seen++;
 		if (options_seen > push_options->nr
-		    || strcmp(option,
-			      push_options->items[options_seen - 1].string)) {
-			retval = 0;
-			goto leave;
-		}
-		free(option);
+		    || xstrncmpz(push_options->items[options_seen - 1].string,
+				 option, optionlen))
+			return 0;
 	}
 
 	if (options_seen != push_options->nr)
 		retval = 0;
 
-leave:
-	free(option);
 	return retval;
 }
 
@@ -763,7 +741,7 @@ static void prepare_push_cert_sha1(struct child_process *proc)
 		already_done = 1;
 		if (write_object_file(push_cert.buf, push_cert.len, OBJ_BLOB,
 				      &push_cert_oid))
-			oidclr(&push_cert_oid);
+			oidclr(&push_cert_oid, the_repository->hash_algo);
 
 		memset(&sigcheck, '\0', sizeof(sigcheck));
 
@@ -773,7 +751,7 @@ static void prepare_push_cert_sha1(struct child_process *proc)
 		check_signature(&sigcheck, push_cert.buf + bogs,
 				push_cert.len - bogs);
 
-		nonce_status = check_nonce(push_cert.buf, bogs);
+		nonce_status = check_nonce(sigcheck.payload);
 	}
 	if (!is_null_oid(&push_cert_oid)) {
 		strvec_pushf(&proc->env, "GIT_PUSH_CERT=%s",
@@ -814,7 +792,7 @@ static int run_and_feed_hook(const char *hook_name, feed_fn feed,
 	struct child_process proc = CHILD_PROCESS_INIT;
 	struct async muxer;
 	int code;
-	const char *hook_path = find_hook(hook_name);
+	const char *hook_path = find_hook(the_repository, hook_name);
 
 	if (!hook_path)
 		return 0;
@@ -944,7 +922,7 @@ static int run_update_hook(struct command *cmd)
 {
 	struct child_process proc = CHILD_PROCESS_INIT;
 	int code;
-	const char *hook_path = find_hook("update");
+	const char *hook_path = find_hook(the_repository, "update");
 
 	if (!hook_path)
 		return 0;
@@ -1120,7 +1098,7 @@ static int run_proc_receive_hook(struct command *commands,
 	int hook_use_push_options = 0;
 	int version = 0;
 	int code;
-	const char *hook_path = find_hook("proc-receive");
+	const char *hook_path = find_hook(the_repository, "proc-receive");
 
 	if (!hook_path) {
 		rp_error("cannot find hook 'proc-receive'");
@@ -1271,7 +1249,7 @@ cleanup:
 	return code;
 }
 
-static char *refuse_unconfigured_deny_msg =
+static const char *refuse_unconfigured_deny_msg =
 	N_("By default, updating the current branch in a non-bare repository\n"
 	   "is denied, because it will make the index and work tree inconsistent\n"
 	   "with what you pushed, and will require 'git reset --hard' to match\n"
@@ -1291,7 +1269,7 @@ static void refuse_unconfigured_deny(void)
 	rp_error("%s", _(refuse_unconfigured_deny_msg));
 }
 
-static char *refuse_unconfigured_deny_delete_current_msg =
+static const char *refuse_unconfigured_deny_delete_current_msg =
 	N_("By default, deleting the current branch is denied, because the next\n"
 	   "'git clone' won't result in any file checked out, causing confusion.\n"
 	   "\n"
@@ -1393,7 +1371,7 @@ static const char *push_to_deploy(unsigned char *sha1,
 	strvec_pushl(&child.args, "diff-index", "--quiet", "--cached",
 		     "--ignore-submodules",
 		     /* diff-index with either HEAD or an empty tree */
-		     head_has_history() ? "HEAD" : empty_tree_oid_hex(),
+		     head_has_history() ? "HEAD" : empty_tree_oid_hex(the_repository->hash_algo),
 		     "--", NULL);
 	strvec_pushv(&child.env, env->v);
 	child.no_stdin = 1;
@@ -1431,7 +1409,7 @@ static const char *push_to_checkout(unsigned char *hash,
 	strvec_pushf(env, "GIT_WORK_TREE=%s", absolute_path(work_tree));
 	strvec_pushv(&opt.env, env->v);
 	strvec_push(&opt.args, hash_to_hex(hash));
-	if (run_hooks_opt(push_to_checkout_hook, &opt))
+	if (run_hooks_opt(the_repository, push_to_checkout_hook, &opt))
 		return "push-to-checkout hook declined";
 	else
 		return NULL;
@@ -1548,6 +1526,7 @@ static const char *update(struct command *cmd, struct shallow_info *si)
 	    starts_with(name, "refs/heads/")) {
 		struct object *old_object, *new_object;
 		struct commit *old_commit, *new_commit;
+		int ret2;
 
 		old_object = parse_object(the_repository, old_oid);
 		new_object = parse_object(the_repository, new_oid);
@@ -1561,7 +1540,10 @@ static const char *update(struct command *cmd, struct shallow_info *si)
 		}
 		old_commit = (struct commit *)old_object;
 		new_commit = (struct commit *)new_object;
-		if (!repo_in_merge_bases(the_repository, old_commit, new_commit)) {
+		ret2 = repo_in_merge_bases(the_repository, old_commit, new_commit);
+		if (ret2 < 0)
+			exit(128);
+		if (!ret2) {
 			rp_error("denying non-fast-forward %s"
 				 " (you should pull first)", name);
 			ret = "non-fast-forward";
@@ -1584,7 +1566,7 @@ static const char *update(struct command *cmd, struct shallow_info *si)
 		struct strbuf err = STRBUF_INIT;
 		if (!parse_object(the_repository, old_oid)) {
 			old_oid = NULL;
-			if (ref_exists(name)) {
+			if (refs_ref_exists(get_main_ref_store(the_repository), name)) {
 				rp_warning("allowing deletion of corrupt ref");
 			} else {
 				rp_warning("deleting a non-existent ref");
@@ -1594,7 +1576,8 @@ static const char *update(struct command *cmd, struct shallow_info *si)
 		if (ref_transaction_delete(transaction,
 					   namespaced_name,
 					   old_oid,
-					   0, "push", &err)) {
+					   NULL, 0,
+					   "push", &err)) {
 			rp_error("%s", err.buf);
 			ret = "failed to delete";
 		} else {
@@ -1613,6 +1596,7 @@ static const char *update(struct command *cmd, struct shallow_info *si)
 		if (ref_transaction_update(transaction,
 					   namespaced_name,
 					   new_oid, old_oid,
+					   NULL, NULL,
 					   0, "push",
 					   &err)) {
 			rp_error("%s", err.buf);
@@ -1634,7 +1618,7 @@ static void run_update_post_hook(struct command *commands)
 	struct child_process proc = CHILD_PROCESS_INIT;
 	const char *hook;
 
-	hook = find_hook("post-update");
+	hook = find_hook(the_repository, "post-update");
 	if (!hook)
 		return;
 
@@ -1711,7 +1695,8 @@ static void check_aliased_update(struct command *cmd, struct string_list *list)
 	int flag;
 
 	strbuf_addf(&buf, "%s%s", get_git_namespace(), cmd->ref_name);
-	dst_name = resolve_ref_unsafe(buf.buf, 0, NULL, &flag);
+	dst_name = refs_resolve_ref_unsafe(get_main_ref_store(the_repository),
+					   buf.buf, 0, NULL, &flag);
 	check_aliased_update_internal(cmd, list, dst_name, flag);
 	strbuf_release(&buf);
 }
@@ -1847,7 +1832,8 @@ static void execute_commands_non_atomic(struct command *commands,
 		if (!should_process_cmd(cmd) || cmd->run_proc_receive)
 			continue;
 
-		transaction = ref_transaction_begin(&err);
+		transaction = ref_store_transaction_begin(get_main_ref_store(the_repository),
+							  &err);
 		if (!transaction) {
 			rp_error("%s", err.buf);
 			strbuf_reset(&err);
@@ -1875,7 +1861,8 @@ static void execute_commands_atomic(struct command *commands,
 	struct strbuf err = STRBUF_INIT;
 	const char *reported_error = "atomic push failure";
 
-	transaction = ref_transaction_begin(&err);
+	transaction = ref_store_transaction_begin(get_main_ref_store(the_repository),
+						  &err);
 	if (!transaction) {
 		rp_error("%s", err.buf);
 		strbuf_reset(&err);
@@ -2001,7 +1988,9 @@ static void execute_commands(struct command *commands,
 	check_aliased_updates(commands);
 
 	free(head_name_to_free);
-	head_name = head_name_to_free = resolve_refdup("HEAD", 0, NULL, NULL);
+	head_name = head_name_to_free = refs_resolve_refdup(get_main_ref_store(the_repository),
+							    "HEAD", 0, NULL,
+							    NULL);
 
 	if (run_proc_receive &&
 	    run_proc_receive_hook(commands, push_options))
@@ -2603,17 +2592,16 @@ int cmd_receive_pack(int argc, const char **argv, const char *prefix)
 		if (auto_gc) {
 			struct child_process proc = CHILD_PROCESS_INIT;
 
-			proc.no_stdin = 1;
-			proc.stdout_to_stderr = 1;
-			proc.err = use_sideband ? -1 : 0;
-			proc.git_cmd = proc.close_object_store = 1;
-			strvec_pushl(&proc.args, "gc", "--auto", "--quiet",
-				     NULL);
+			if (prepare_auto_maintenance(1, &proc)) {
+				proc.no_stdin = 1;
+				proc.stdout_to_stderr = 1;
+				proc.err = use_sideband ? -1 : 0;
 
-			if (!start_command(&proc)) {
-				if (use_sideband)
-					copy_to_sideband(proc.err, -1, NULL);
-				finish_command(&proc);
+				if (!start_command(&proc)) {
+					if (use_sideband)
+						copy_to_sideband(proc.err, -1, NULL);
+					finish_command(&proc);
+				}
 			}
 		}
 		if (auto_update_server_info)
