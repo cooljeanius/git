@@ -279,6 +279,7 @@ jobs:
             pool: macos-13
             env:
               NO_SVN_TESTS: 1
+              NO_PERL: 1
           - jobname: osx-reftable
             cc: clang
             pool: macos-13
