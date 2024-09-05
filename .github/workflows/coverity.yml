@@ -1,23 +1,27 @@
+---
 name: Coverity
 
-# This GitHub workflow automates submitting builds to Coverity Scan. To enable it,
-# set the repository variable `ENABLE_COVERITY_SCAN_FOR_BRANCHES` (for details, see
-# https://docs.github.com/en/actions/learn-github-actions/variables) to a JSON
-# string array containing the names of the branches for which the workflow should be
-# run, e.g. `["main", "next"]`.
+# This GitHub workflow automates submitting builds to Coverity Scan. To enable
+# it, set the repository variable `ENABLE_COVERITY_SCAN_FOR_BRANCHES`
+# (for details, see:
+# <https://docs.github.com/en/actions/learn-github-actions/variables>)
+# to a JSON string array containing the names of the branches for which the
+# workflow should be run, e.g. `["main", "next"]`.
 #
-# In addition, two repository secrets must be set (for details how to add secrets, see
-# https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions):
+# In addition, 2 repository secrets must be set
+# (for details how to add secrets, see:
+# <https://docs.github.com/en/actions/security-guides/using-secrets-in-github-actions>):
 # `COVERITY_SCAN_EMAIL` and `COVERITY_SCAN_TOKEN`. The former specifies the
 # email to which the Coverity reports should be sent and the latter can be
 # obtained from the Project Settings tab of the Coverity project).
 #
-# The workflow runs on `ubuntu-latest` by default. This can be overridden by setting
-# the repository variable `ENABLE_COVERITY_SCAN_ON_OS` to a JSON string array specifying
-# the operating systems, e.g. `["ubuntu-latest", "windows-latest"]`.
+# The workflow runs on `ubuntu-latest` by default. This can be overridden by
+# setting the repository variable `ENABLE_COVERITY_SCAN_ON_OS` to a JSON string
+# array specifying the operating systems, e.g.
+# `["ubuntu-latest", "windows-latest"]`.
 #
-# By default, the builds are submitted to the Coverity project `git`. To override this,
-# set the repository variable `COVERITY_PROJECT`.
+# By default, the builds are submitted to the Coverity project `git`.
+# To override this, set the repository variable `COVERITY_PROJECT`.
 
 on:
   push:
@@ -116,7 +120,8 @@ jobs:
           case "$COVERITY_TOOL_FILENAME" in
           *.tgz)
             mkdir $RUNNER_TEMP/cov-analysis &&
-            tar -xzf $RUNNER_TEMP/$COVERITY_TOOL_FILENAME --strip 1 -C $RUNNER_TEMP/cov-analysis
+            tar -xzf $RUNNER_TEMP/$COVERITY_TOOL_FILENAME --strip 1 -C \
+              $RUNNER_TEMP/cov-analysis
             ;;
           *.dmg)
             cd $RUNNER_TEMP &&

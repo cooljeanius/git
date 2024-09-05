@@ -1,3 +1,4 @@
+---
 name: check-whitespace
 
 # Get the repository with all commits to ensure that we can analyze
