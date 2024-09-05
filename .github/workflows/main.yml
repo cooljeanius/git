@@ -277,6 +277,8 @@ jobs:
           - jobname: osx-clang
             cc: clang
             pool: macos-13
+            env:
+              NO_SVN_TESTS: 1
           - jobname: osx-reftable
             cc: clang
             pool: macos-13
