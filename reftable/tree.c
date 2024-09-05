@@ -20,8 +20,8 @@ struct tree_node *tree_search(void *key, struct tree_node **rootp,
 		if (!insert) {
 			return NULL;
 		} else {
-			struct tree_node *n =
-				reftable_calloc(sizeof(struct tree_node));
+			struct tree_node *n;
+			REFTABLE_CALLOC_ARRAY(n, 1);
 			n->key = key;
 			*rootp = n;
 			return *rootp;
@@ -39,25 +39,20 @@ struct tree_node *tree_search(void *key, struct tree_node **rootp,
 void infix_walk(struct tree_node *t, void (*action)(void *arg, void *key),
 		void *arg)
 {
-	if (t->left) {
+	if (t->left)
 		infix_walk(t->left, action, arg);
-	}
 	action(arg, t->key);
-	if (t->right) {
+	if (t->right)
 		infix_walk(t->right, action, arg);
-	}
 }
 
 void tree_free(struct tree_node *t)
 {
-	if (!t) {
+	if (!t)
 		return;
-	}
-	if (t->left) {
+	if (t->left)
 		tree_free(t->left);
-	}
-	if (t->right) {
+	if (t->right)
 		tree_free(t->right);
-	}
 	reftable_free(t);
 }

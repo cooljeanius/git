@@ -385,6 +385,10 @@ include shared.mak
 # supports calling _NSGetExecutablePath to retrieve the path of the running
 # executable.
 #
+# When using RUNTIME_PREFIX, define HAVE_ZOS_GET_EXECUTABLE_PATH if your platform
+# supports calling __getprogramdir and getprogname to retrieve the path of the
+# running executable.
+#
 # When using RUNTIME_PREFIX, define HAVE_WPGMPTR if your platform offers
 # the global variable _wpgmptr containing the absolute path of the current
 # executable (this is the case on Windows).
@@ -408,6 +412,9 @@ include shared.mak
 # fsmonitor (whether the hook or IPC daemon version), set FSMONITOR_OS_SETTINGS
 # to the "<name>" of the corresponding `compat/fsmonitor/fsm-settings-<name>.c`
 # that implements the `fsm_os_settings__*()` routines.
+#
+# Define LINK_FUZZ_PROGRAMS if you want `make all` to also build the fuzz test
+# programs in oss-fuzz/.
 #
 # === Optional library: libintl ===
 #
@@ -752,22 +759,6 @@ SCRIPTS = $(SCRIPT_SH_GEN) \
 
 ETAGS_TARGET = TAGS
 
-# If you add a new fuzzer, please also make sure to run it in
-# ci/run-build-and-minimal-fuzzers.sh so that we make sure it still links and
-# runs in the future.
-FUZZ_OBJS += oss-fuzz/dummy-cmd-main.o
-FUZZ_OBJS += oss-fuzz/fuzz-commit-graph.o
-FUZZ_OBJS += oss-fuzz/fuzz-date.o
-FUZZ_OBJS += oss-fuzz/fuzz-pack-headers.o
-FUZZ_OBJS += oss-fuzz/fuzz-pack-idx.o
-.PHONY: fuzz-objs
-fuzz-objs: $(FUZZ_OBJS)
-
-# Always build fuzz objects even if not testing, to prevent bit-rot.
-all:: $(FUZZ_OBJS)
-
-FUZZ_PROGRAMS += $(patsubst %.o,%,$(filter-out %dummy-cmd-main.o,$(FUZZ_OBJS)))
-
 # Empty...
 EXTRA_PROGRAMS =
 
@@ -797,6 +788,7 @@ TEST_BUILTINS_OBJS += test-config.o
 TEST_BUILTINS_OBJS += test-crontab.o
 TEST_BUILTINS_OBJS += test-csprng.o
 TEST_BUILTINS_OBJS += test-date.o
+TEST_BUILTINS_OBJS += test-delete-gpgsig.o
 TEST_BUILTINS_OBJS += test-delta.o
 TEST_BUILTINS_OBJS += test-dir-iterator.o
 TEST_BUILTINS_OBJS += test-drop-caches.o
@@ -805,7 +797,7 @@ TEST_BUILTINS_OBJS += test-dump-fsmonitor.o
 TEST_BUILTINS_OBJS += test-dump-split-index.o
 TEST_BUILTINS_OBJS += test-dump-untracked-cache.o
 TEST_BUILTINS_OBJS += test-env-helper.o
-TEST_BUILTINS_OBJS += test-example-decorate.o
+TEST_BUILTINS_OBJS += test-example-tap.o
 TEST_BUILTINS_OBJS += test-find-pack.o
 TEST_BUILTINS_OBJS += test-fsmonitor-client.o
 TEST_BUILTINS_OBJS += test-genrandom.o
@@ -821,8 +813,6 @@ TEST_BUILTINS_OBJS += test-match-trees.o
 TEST_BUILTINS_OBJS += test-mergesort.o
 TEST_BUILTINS_OBJS += test-mktemp.o
 TEST_BUILTINS_OBJS += test-oid-array.o
-TEST_BUILTINS_OBJS += test-oidmap.o
-TEST_BUILTINS_OBJS += test-oidtree.o
 TEST_BUILTINS_OBJS += test-online-cpus.o
 TEST_BUILTINS_OBJS += test-pack-mtimes.o
 TEST_BUILTINS_OBJS += test-parse-options.o
@@ -831,7 +821,6 @@ TEST_BUILTINS_OBJS += test-partial-clone.o
 TEST_BUILTINS_OBJS += test-path-utils.o
 TEST_BUILTINS_OBJS += test-pcre2-config.o
 TEST_BUILTINS_OBJS += test-pkt-line.o
-TEST_BUILTINS_OBJS += test-prio-queue.o
 TEST_BUILTINS_OBJS += test-proc-receive.o
 TEST_BUILTINS_OBJS += test-progress.o
 TEST_BUILTINS_OBJS += test-reach.o
@@ -851,7 +840,6 @@ TEST_BUILTINS_OBJS += test-sha1.o
 TEST_BUILTINS_OBJS += test-sha256.o
 TEST_BUILTINS_OBJS += test-sigchain.o
 TEST_BUILTINS_OBJS += test-simple-ipc.o
-TEST_BUILTINS_OBJS += test-strcmp-offset.o
 TEST_BUILTINS_OBJS += test-string-list.o
 TEST_BUILTINS_OBJS += test-submodule-config.o
 TEST_BUILTINS_OBJS += test-submodule-nested-repo-config.o
@@ -859,7 +847,6 @@ TEST_BUILTINS_OBJS += test-submodule.o
 TEST_BUILTINS_OBJS += test-subprocess.o
 TEST_BUILTINS_OBJS += test-trace2.o
 TEST_BUILTINS_OBJS += test-truncate.o
-TEST_BUILTINS_OBJS += test-urlmatch-normalization.o
 TEST_BUILTINS_OBJS += test-userdiff.o
 TEST_BUILTINS_OBJS += test-wildmatch.o
 TEST_BUILTINS_OBJS += test-windows-named-pipe.o
@@ -1061,6 +1048,7 @@ LIB_OBJS += list-objects-filter.o
 LIB_OBJS += list-objects.o
 LIB_OBJS += lockfile.o
 LIB_OBJS += log-tree.o
+LIB_OBJS += loose.o
 LIB_OBJS += ls-refs.o
 LIB_OBJS += mailinfo.o
 LIB_OBJS += mailmap.o
@@ -1073,6 +1061,7 @@ LIB_OBJS += merge-ort-wrappers.o
 LIB_OBJS += merge-recursive.o
 LIB_OBJS += merge.o
 LIB_OBJS += midx.o
+LIB_OBJS += midx-write.o
 LIB_OBJS += name-hash.o
 LIB_OBJS += negotiator/default.o
 LIB_OBJS += negotiator/noop.o
@@ -1081,6 +1070,7 @@ LIB_OBJS += notes-cache.o
 LIB_OBJS += notes-merge.o
 LIB_OBJS += notes-utils.o
 LIB_OBJS += notes.o
+LIB_OBJS += object-file-convert.o
 LIB_OBJS += object-file.o
 LIB_OBJS += object-name.o
 LIB_OBJS += object.o
@@ -1115,6 +1105,7 @@ LIB_OBJS += prompt.o
 LIB_OBJS += protocol.o
 LIB_OBJS += protocol-caps.o
 LIB_OBJS += prune-packed.o
+LIB_OBJS += pseudo-merge.o
 LIB_OBJS += quote.o
 LIB_OBJS += range-diff.o
 LIB_OBJS += reachable.o
@@ -1127,6 +1118,7 @@ LIB_OBJS += reflog.o
 LIB_OBJS += refs.o
 LIB_OBJS += refs/debug.o
 LIB_OBJS += refs/files-backend.o
+LIB_OBJS += refs/reftable-backend.o
 LIB_OBJS += refs/iterator.o
 LIB_OBJS += refs/packed-backend.o
 LIB_OBJS += refs/ref-cache.o
@@ -1291,6 +1283,7 @@ BUILTIN_OBJS += builtin/read-tree.o
 BUILTIN_OBJS += builtin/rebase.o
 BUILTIN_OBJS += builtin/receive-pack.o
 BUILTIN_OBJS += builtin/reflog.o
+BUILTIN_OBJS += builtin/refs.o
 BUILTIN_OBJS += builtin/remote-ext.o
 BUILTIN_OBJS += builtin/remote-fd.o
 BUILTIN_OBJS += builtin/remote.o
@@ -1342,13 +1335,30 @@ THIRD_PARTY_SOURCES += compat/regex/%
 THIRD_PARTY_SOURCES += sha1collisiondetection/%
 THIRD_PARTY_SOURCES += sha1dc/%
 
-UNIT_TEST_PROGRAMS += t-basic
-UNIT_TEST_PROGRAMS += t-mem-pool
-UNIT_TEST_PROGRAMS += t-strbuf
 UNIT_TEST_PROGRAMS += t-ctype
+UNIT_TEST_PROGRAMS += t-example-decorate
+UNIT_TEST_PROGRAMS += t-hash
+UNIT_TEST_PROGRAMS += t-hashmap
+UNIT_TEST_PROGRAMS += t-mem-pool
+UNIT_TEST_PROGRAMS += t-oidmap
+UNIT_TEST_PROGRAMS += t-oidtree
+UNIT_TEST_PROGRAMS += t-prio-queue
+UNIT_TEST_PROGRAMS += t-reftable-basics
+UNIT_TEST_PROGRAMS += t-reftable-block
+UNIT_TEST_PROGRAMS += t-reftable-merged
+UNIT_TEST_PROGRAMS += t-reftable-pq
+UNIT_TEST_PROGRAMS += t-reftable-readwrite
+UNIT_TEST_PROGRAMS += t-reftable-record
+UNIT_TEST_PROGRAMS += t-reftable-tree
+UNIT_TEST_PROGRAMS += t-strbuf
+UNIT_TEST_PROGRAMS += t-strcmp-offset
+UNIT_TEST_PROGRAMS += t-strvec
+UNIT_TEST_PROGRAMS += t-trailer
+UNIT_TEST_PROGRAMS += t-urlmatch-normalization
 UNIT_TEST_PROGS = $(patsubst %,$(UNIT_TEST_BIN)/%$X,$(UNIT_TEST_PROGRAMS))
 UNIT_TEST_OBJS = $(patsubst %,$(UNIT_TEST_DIR)/%.o,$(UNIT_TEST_PROGRAMS))
 UNIT_TEST_OBJS += $(UNIT_TEST_DIR)/test-lib.o
+UNIT_TEST_OBJS += $(UNIT_TEST_DIR)/lib-oid.o
 
 # xdiff and reftable libs may in turn depend on what is in libgit.a
 GITLIBS = common-main.o $(LIB_FILE) $(XDIFF_LIB) $(REFTABLE_LIB) $(LIB_FILE)
@@ -1376,7 +1386,7 @@ PTHREAD_CFLAGS =
 
 # For the 'sparse' target
 SPARSE_FLAGS ?= -std=gnu99
-SP_EXTRA_FLAGS = -Wno-universal-initializer
+SP_EXTRA_FLAGS =
 
 # For informing GIT-BUILD-OPTIONS of the SANITIZE=leak,address targets
 SANITIZE_LEAK =
@@ -1452,8 +1462,8 @@ ALL_COMMANDS_TO_INSTALL += git-upload-archive$(X)
 ALL_COMMANDS_TO_INSTALL += git-upload-pack$(X)
 endif
 
-ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS)
-ALL_LDFLAGS = $(LDFLAGS)
+ALL_CFLAGS = $(DEVELOPER_CFLAGS) $(CPPFLAGS) $(CFLAGS) $(CFLAGS_APPEND)
+ALL_LDFLAGS = $(LDFLAGS) $(LDFLAGS_APPEND)
 
 ifdef SANITIZE
 SANITIZERS := $(foreach flag,$(subst $(comma),$(space),$(SANITIZE)),$(flag))
@@ -1552,23 +1562,23 @@ ifneq (,$(SOCKLEN_T))
 endif
 
 ifeq ($(uname_S),Darwin)
-	ifndef NO_FINK
-		ifeq ($(shell test -d /sw/lib && echo y),y)
+        ifndef NO_FINK
+                ifeq ($(shell test -d /sw/lib && echo y),y)
 			BASIC_CFLAGS += -I/sw/include
 			BASIC_LDFLAGS += -L/sw/lib
-		endif
-	endif
-	ifndef NO_DARWIN_PORTS
-		ifeq ($(shell test -d /opt/local/lib && echo y),y)
+                endif
+        endif
+        ifndef NO_DARWIN_PORTS
+                ifeq ($(shell test -d /opt/local/lib && echo y),y)
 			BASIC_CFLAGS += -I/opt/local/include
 			BASIC_LDFLAGS += -L/opt/local/lib
-		endif
-	endif
-	ifndef NO_APPLE_COMMON_CRYPTO
+                endif
+        endif
+        ifndef NO_APPLE_COMMON_CRYPTO
 		NO_OPENSSL = YesPlease
 		APPLE_COMMON_CRYPTO = YesPlease
 		COMPAT_CFLAGS += -DAPPLE_COMMON_CRYPTO
-	endif
+        endif
 	PTHREAD_LIBS =
 endif
 
@@ -1590,7 +1600,7 @@ endif
 
 ifdef LIBPCREDIR
 	BASIC_CFLAGS += -I$(LIBPCREDIR)/include
-	EXTLIBS += -L$(LIBPCREDIR)/$(lib) $(CC_LD_DYNPATH)$(LIBPCREDIR)/$(lib)
+	EXTLIBS += $(call libpath_template,$(LIBPCREDIR)/$(lib))
 endif
 
 ifdef HAVE_ALLOCA_H
@@ -1607,23 +1617,23 @@ ifdef NO_CURL
 	REMOTE_CURL_NAMES =
 	EXCLUDED_PROGRAMS += git-http-fetch git-http-push
 else
-	ifdef CURLDIR
+        ifdef CURLDIR
 		# Try "-Wl,-rpath=$(CURLDIR)/$(lib)" in such a case.
 		CURL_CFLAGS = -I$(CURLDIR)/include
-		CURL_LIBCURL = -L$(CURLDIR)/$(lib) $(CC_LD_DYNPATH)$(CURLDIR)/$(lib)
-	else
+		CURL_LIBCURL = $(call libpath_template,$(CURLDIR)/$(lib))
+        else
 		CURL_CFLAGS =
 		CURL_LIBCURL =
-	endif
+        endif
 
-	ifndef CURL_LDFLAGS
+        ifndef CURL_LDFLAGS
 		CURL_LDFLAGS = $(eval CURL_LDFLAGS := $$(shell $$(CURL_CONFIG) --libs))$(CURL_LDFLAGS)
-	endif
+        endif
 	CURL_LIBCURL += $(CURL_LDFLAGS)
 
-	ifndef CURL_CFLAGS
+        ifndef CURL_CFLAGS
 		CURL_CFLAGS = $(eval CURL_CFLAGS := $$(shell $$(CURL_CONFIG) --cflags))$(CURL_CFLAGS)
-	endif
+        endif
 	BASIC_CFLAGS += $(CURL_CFLAGS)
 
 	REMOTE_CURL_PRIMARY = git-remote-http$X
@@ -1631,49 +1641,49 @@ else
 	REMOTE_CURL_NAMES = $(REMOTE_CURL_PRIMARY) $(REMOTE_CURL_ALIASES)
 	PROGRAM_OBJS += http-fetch.o
 	PROGRAMS += $(REMOTE_CURL_NAMES)
-	ifndef NO_EXPAT
+        ifndef NO_EXPAT
 		PROGRAM_OBJS += http-push.o
-	endif
+        endif
 	curl_check := $(shell (echo 072200; $(CURL_CONFIG) --vernum | sed -e '/^70[BC]/s/^/0/') 2>/dev/null | sort -r | sed -ne 2p)
-	ifeq "$(curl_check)" "072200"
+        ifeq "$(curl_check)" "072200"
 		USE_CURL_FOR_IMAP_SEND = YesPlease
-	endif
-	ifdef USE_CURL_FOR_IMAP_SEND
+        endif
+        ifdef USE_CURL_FOR_IMAP_SEND
 		BASIC_CFLAGS += -DUSE_CURL_FOR_IMAP_SEND
 		IMAP_SEND_BUILDDEPS = http.o
 		IMAP_SEND_LDFLAGS += $(CURL_LIBCURL)
-	endif
-	ifndef NO_EXPAT
-		ifdef EXPATDIR
+        endif
+        ifndef NO_EXPAT
+                ifdef EXPATDIR
 			BASIC_CFLAGS += -I$(EXPATDIR)/include
-			EXPAT_LIBEXPAT = -L$(EXPATDIR)/$(lib) $(CC_LD_DYNPATH)$(EXPATDIR)/$(lib) -lexpat
-		else
+			EXPAT_LIBEXPAT = $(call libpath_template,$(EXPATDIR)/$(lib)) -lexpat
+                else
 			EXPAT_LIBEXPAT = -lexpat
-		endif
-		ifdef EXPAT_NEEDS_XMLPARSE_H
+                endif
+                ifdef EXPAT_NEEDS_XMLPARSE_H
 			BASIC_CFLAGS += -DEXPAT_NEEDS_XMLPARSE_H
-		endif
-	endif
+                endif
+        endif
 endif
 IMAP_SEND_LDFLAGS += $(OPENSSL_LINK) $(OPENSSL_LIBSSL) $(LIB_4_CRYPTO)
 
 ifdef ZLIB_PATH
 	BASIC_CFLAGS += -I$(ZLIB_PATH)/include
-	EXTLIBS += -L$(ZLIB_PATH)/$(lib) $(CC_LD_DYNPATH)$(ZLIB_PATH)/$(lib)
+	EXTLIBS += $(call libpath_template,$(ZLIB_PATH)/$(lib))
 endif
 EXTLIBS += -lz
 
 ifndef NO_OPENSSL
 	OPENSSL_LIBSSL = -lssl
-	ifdef OPENSSLDIR
+        ifdef OPENSSLDIR
 		BASIC_CFLAGS += -I$(OPENSSLDIR)/include
-		OPENSSL_LINK = -L$(OPENSSLDIR)/$(lib) $(CC_LD_DYNPATH)$(OPENSSLDIR)/$(lib)
-	else
+		OPENSSL_LINK = $(call libpath_template,$(OPENSSLDIR)/$(lib))
+        else
 		OPENSSL_LINK =
-	endif
-	ifdef NEEDS_CRYPTO_WITH_SSL
+        endif
+        ifdef NEEDS_CRYPTO_WITH_SSL
 		OPENSSL_LIBSSL += -lcrypto
-	endif
+        endif
 else
 	BASIC_CFLAGS += -DNO_OPENSSL
 	OPENSSL_LIBSSL =
@@ -1691,18 +1701,18 @@ ifdef APPLE_COMMON_CRYPTO
 endif
 endif
 ifndef NO_ICONV
-	ifdef NEEDS_LIBICONV
-		ifdef ICONVDIR
+        ifdef NEEDS_LIBICONV
+                ifdef ICONVDIR
 			BASIC_CFLAGS += -I$(ICONVDIR)/include
-			ICONV_LINK = -L$(ICONVDIR)/$(lib) $(CC_LD_DYNPATH)$(ICONVDIR)/$(lib)
-		else
+			ICONV_LINK = $(call libpath_template,$(ICONVDIR)/$(lib))
+                else
 			ICONV_LINK =
-		endif
-		ifdef NEEDS_LIBINTL_BEFORE_LIBICONV
+                endif
+                ifdef NEEDS_LIBINTL_BEFORE_LIBICONV
 			ICONV_LINK += -lintl
-		endif
+                endif
 		EXTLIBS += $(ICONV_LINK) -liconv
-	endif
+        endif
 endif
 ifdef ICONV_OMITS_BOM
 	BASIC_CFLAGS += -DICONV_OMITS_BOM
@@ -1823,10 +1833,10 @@ ifdef NO_MMAP
 	COMPAT_CFLAGS += -DNO_MMAP
 	COMPAT_OBJS += compat/mmap.o
 else
-	ifdef USE_WIN32_MMAP
+        ifdef USE_WIN32_MMAP
 		COMPAT_CFLAGS += -DUSE_WIN32_MMAP
 		COMPAT_OBJS += compat/win32mmap.o
-	endif
+        endif
 endif
 ifdef MMAP_PREVENTS_DELETE
 	BASIC_CFLAGS += -DMMAP_PREVENTS_DELETE
@@ -1951,11 +1961,11 @@ else
 	BASIC_CFLAGS += -DSHA1_DC
 	LIB_OBJS += sha1dc_git.o
 ifdef DC_SHA1_EXTERNAL
-	ifdef DC_SHA1_SUBMODULE
-		ifneq ($(DC_SHA1_SUBMODULE),auto)
+        ifdef DC_SHA1_SUBMODULE
+                ifneq ($(DC_SHA1_SUBMODULE),auto)
 $(error Only set DC_SHA1_EXTERNAL or DC_SHA1_SUBMODULE, not both)
-		endif
-	endif
+                endif
+        endif
 	BASIC_CFLAGS += -DDC_SHA1_EXTERNAL
 	EXTLIBS += -lsha1detectcoll
 else
@@ -2149,6 +2159,10 @@ endif
 
 ifdef HAVE_NS_GET_EXECUTABLE_PATH
 	BASIC_CFLAGS += -DHAVE_NS_GET_EXECUTABLE_PATH
+endif
+
+ifdef HAVE_ZOS_GET_EXECUTABLE_PATH
+        BASIC_CFLAGS += -DHAVE_ZOS_GET_EXECUTABLE_PATH
 endif
 
 ifdef HAVE_WPGMPTR
@@ -2366,6 +2380,29 @@ ifndef NO_TCLTK
 	$(QUIET_SUBDIR0)gitk-git $(QUIET_SUBDIR1) all
 endif
 	$(QUIET_SUBDIR0)templates $(QUIET_SUBDIR1) SHELL_PATH='$(SHELL_PATH_SQ)' PERL_PATH='$(PERL_PATH_SQ)'
+
+# If you add a new fuzzer, please also make sure to run it in
+# ci/run-build-and-minimal-fuzzers.sh so that we make sure it still links and
+# runs in the future.
+FUZZ_OBJS += oss-fuzz/dummy-cmd-main.o
+FUZZ_OBJS += oss-fuzz/fuzz-commit-graph.o
+FUZZ_OBJS += oss-fuzz/fuzz-config.o
+FUZZ_OBJS += oss-fuzz/fuzz-date.o
+FUZZ_OBJS += oss-fuzz/fuzz-pack-headers.o
+FUZZ_OBJS += oss-fuzz/fuzz-pack-idx.o
+.PHONY: fuzz-objs
+fuzz-objs: $(FUZZ_OBJS)
+
+# Always build fuzz objects even if not testing, to prevent bit-rot.
+all:: $(FUZZ_OBJS)
+
+FUZZ_PROGRAMS += $(patsubst %.o,%,$(filter-out %dummy-cmd-main.o,$(FUZZ_OBJS)))
+
+# Build fuzz programs when possible, even without the necessary fuzzing support,
+# to prevent bit-rot.
+ifdef LINK_FUZZ_PROGRAMS
+all:: $(FUZZ_PROGRAMS)
+endif
 
 please_set_SHELL_PATH_to_a_more_modern_shell:
 	@$$(:)
@@ -2650,23 +2687,12 @@ REFTABLE_OBJS += reftable/merged.o
 REFTABLE_OBJS += reftable/pq.o
 REFTABLE_OBJS += reftable/reader.o
 REFTABLE_OBJS += reftable/record.o
-REFTABLE_OBJS += reftable/refname.o
-REFTABLE_OBJS += reftable/generic.o
 REFTABLE_OBJS += reftable/stack.o
 REFTABLE_OBJS += reftable/tree.o
 REFTABLE_OBJS += reftable/writer.o
 
-REFTABLE_TEST_OBJS += reftable/basics_test.o
-REFTABLE_TEST_OBJS += reftable/block_test.o
-REFTABLE_TEST_OBJS += reftable/dump.o
-REFTABLE_TEST_OBJS += reftable/merged_test.o
-REFTABLE_TEST_OBJS += reftable/pq_test.o
-REFTABLE_TEST_OBJS += reftable/record_test.o
-REFTABLE_TEST_OBJS += reftable/readwrite_test.o
-REFTABLE_TEST_OBJS += reftable/refname_test.o
 REFTABLE_TEST_OBJS += reftable/stack_test.o
 REFTABLE_TEST_OBJS += reftable/test_framework.o
-REFTABLE_TEST_OBJS += reftable/tree_test.o
 
 TEST_OBJS := $(patsubst %$X,%.o,$(TEST_PROGRAMS)) $(patsubst %,t/helper/%,$(TEST_BUILTINS_OBJS))
 
@@ -3222,7 +3248,7 @@ perf: all
 
 .PRECIOUS: $(TEST_OBJS)
 
-t/helper/test-tool$X: $(patsubst %,t/helper/%,$(TEST_BUILTINS_OBJS))
+t/helper/test-tool$X: $(patsubst %,t/helper/%,$(TEST_BUILTINS_OBJS)) $(UNIT_TEST_DIR)/test-lib.o
 
 t/helper/test-%$X: t/helper/test-%.o GIT-LDFLAGS $(GITLIBS) $(REFTABLE_TEST_LIB)
 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) $(filter %.o,$^) $(filter %.a,$^) $(LIBS)
@@ -3680,14 +3706,14 @@ cocciclean:
 	$(RM) contrib/coccinelle/*.cocci.patch
 
 clean: profile-clean coverage-clean cocciclean
-	$(RM) -r .build
+	$(RM) -r .build $(UNIT_TEST_BIN)
 	$(RM) po/git.pot po/git-core.pot
 	$(RM) git.res
 	$(RM) $(OBJECTS)
 	$(RM) headless-git.o
 	$(RM) $(LIB_FILE) $(XDIFF_LIB) $(REFTABLE_LIB) $(REFTABLE_TEST_LIB)
 	$(RM) $(ALL_PROGRAMS) $(SCRIPT_LIB) $(BUILT_INS) $(OTHER_PROGRAMS)
-	$(RM) $(TEST_PROGRAMS) $(UNIT_TEST_PROGS)
+	$(RM) $(TEST_PROGRAMS)
 	$(RM) $(FUZZ_PROGRAMS)
 	$(RM) $(SP_OBJ)
 	$(RM) $(HCC)
@@ -3743,42 +3769,6 @@ ALL_COMMANDS += scalar
 .PHONY: check-docs
 check-docs::
 	$(MAKE) -C Documentation lint-docs
-	@(for v in $(patsubst %$X,%,$(ALL_COMMANDS)); \
-	do \
-		case "$$v" in \
-		git-merge-octopus | git-merge-ours | git-merge-recursive | \
-		git-merge-resolve | git-merge-subtree | \
-		git-fsck-objects | git-init-db | \
-		git-remote-* | git-stage | git-legacy-* | \
-		git-?*--?* ) continue ;; \
-		esac ; \
-		test -f "Documentation/$$v.txt" || \
-		echo "no doc: $$v"; \
-		sed -e '1,/^### command list/d' -e '/^#/d' command-list.txt | \
-		grep -q "^$$v[ 	]" || \
-		case "$$v" in \
-		git) ;; \
-		*) echo "no link: $$v";; \
-		esac ; \
-	done; \
-	( \
-		sed -e '1,/^### command list/d' \
-		    -e '/^#/d' \
-		    -e '/guide$$/d' \
-		    -e '/interfaces$$/d' \
-		    -e 's/[ 	].*//' \
-		    -e 's/^/listed /' command-list.txt; \
-		$(MAKE) -C Documentation print-man1 | \
-		grep '\.txt$$' | \
-		sed -e 's|^|documented |' \
-		    -e 's/\.txt//'; \
-	) | while read how cmd; \
-	do \
-		case " $(patsubst %$X,%,$(ALL_COMMANDS) $(BUILT_INS) $(EXCLUDED_PROGRAMS)) " in \
-		*" $$cmd "*)	;; \
-		*) echo "removed but $$how: $$cmd" ;; \
-		esac; \
-	done ) | sort
 
 ### Make sure built-ins do not have dups and listed in git.c
 #
@@ -3852,30 +3842,31 @@ cover_db_html: cover_db
 #
 # An example command to build against libFuzzer from LLVM 11.0.0:
 #
-# make CC=clang CXX=clang++ \
+# make CC=clang FUZZ_CXX=clang++ \
 #      CFLAGS="-fsanitize=fuzzer-no-link,address" \
 #      LIB_FUZZING_ENGINE="-fsanitize=fuzzer,address" \
 #      fuzz-all
 #
+FUZZ_CXX ?= $(CC)
 FUZZ_CXXFLAGS ?= $(ALL_CFLAGS)
 
 .PHONY: fuzz-all
+fuzz-all: $(FUZZ_PROGRAMS)
 
 $(FUZZ_PROGRAMS): %: %.o oss-fuzz/dummy-cmd-main.o $(GITLIBS) GIT-LDFLAGS
-	$(QUIET_LINK)$(CXX) $(FUZZ_CXXFLAGS) -o $@ $(ALL_LDFLAGS) \
+	$(QUIET_LINK)$(FUZZ_CXX) $(FUZZ_CXXFLAGS) -o $@ $(ALL_LDFLAGS) \
 		-Wl,--allow-multiple-definition \
 		$(filter %.o,$^) $(filter %.a,$^) $(LIBS) $(LIB_FUZZING_ENGINE)
 
-fuzz-all: $(FUZZ_PROGRAMS)
-
-$(UNIT_TEST_BIN):
-	@mkdir -p $(UNIT_TEST_BIN)
-
-$(UNIT_TEST_PROGS): $(UNIT_TEST_BIN)/%$X: $(UNIT_TEST_DIR)/%.o $(UNIT_TEST_DIR)/test-lib.o $(GITLIBS) GIT-LDFLAGS $(UNIT_TEST_BIN)
+$(UNIT_TEST_PROGS): $(UNIT_TEST_BIN)/%$X: $(UNIT_TEST_DIR)/%.o \
+	$(UNIT_TEST_DIR)/test-lib.o \
+	$(UNIT_TEST_DIR)/lib-oid.o \
+	$(GITLIBS) GIT-LDFLAGS
+	$(call mkdir_p_parent_template)
 	$(QUIET_LINK)$(CC) $(ALL_CFLAGS) -o $@ $(ALL_LDFLAGS) \
 		$(filter %.o,$^) $(filter %.a,$^) $(LIBS)
 
 .PHONY: build-unit-tests unit-tests
 build-unit-tests: $(UNIT_TEST_PROGS)
-unit-tests: $(UNIT_TEST_PROGS)
+unit-tests: $(UNIT_TEST_PROGS) t/helper/test-tool$X
 	$(MAKE) -C t/ unit-tests

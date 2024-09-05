@@ -26,6 +26,7 @@ Initial setup:
  touch file "conflict".
 '
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 . "$TEST_DIRECTORY"/lib-rebase.sh
@@ -151,6 +152,18 @@ test_expect_success 'rebase -i with the exec command checks tree cleanness' '
 	test_cmp_rev primary^ HEAD &&
 	git reset --hard &&
 	git rebase --continue
+'
+
+test_expect_success 'cherry-pick works with rebase --exec' '
+	test_when_finished "git cherry-pick --abort; \
+			    git rebase --abort; \
+			    git checkout primary" &&
+	echo "exec git cherry-pick G" >todo &&
+	(
+		set_replace_editor todo &&
+		test_must_fail git rebase -i D D
+	) &&
+	test_cmp_rev G CHERRY_PICK_HEAD
 '
 
 test_expect_success 'rebase -x with empty command fails' '
@@ -2201,6 +2214,51 @@ test_expect_success 'bad labels and refs rejected when parsing todo list' '
 	grep "update-ref requires a fully qualified refname e.g. refs/heads/topic" \
 		err &&
 	test_path_is_missing execed
+'
+
+test_expect_success 'non-merge commands reject merge commits' '
+	test_when_finished "test_might_fail git rebase --abort" &&
+	git checkout E &&
+	git merge I &&
+	oid=$(git rev-parse HEAD) &&
+	cat >todo <<-EOF &&
+	pick $oid
+	reword $oid
+	edit $oid
+	fixup $oid
+	squash $oid
+	EOF
+	(
+		set_replace_editor todo &&
+		test_must_fail git rebase -i HEAD 2>actual
+	) &&
+	cat >expect <<-EOF &&
+	error: ${SQ}pick${SQ} does not accept merge commits
+	hint: ${SQ}pick${SQ} does not take a merge commit. If you wanted to
+	hint: replay the merge, use ${SQ}merge -C${SQ} on the commit.
+	hint: Disable this message with "git config advice.rebaseTodoError false"
+	error: invalid line 1: pick $oid
+	error: ${SQ}reword${SQ} does not accept merge commits
+	hint: ${SQ}reword${SQ} does not take a merge commit. If you wanted to
+	hint: replay the merge and reword the commit message, use
+	hint: ${SQ}merge -c${SQ} on the commit
+	hint: Disable this message with "git config advice.rebaseTodoError false"
+	error: invalid line 2: reword $oid
+	error: ${SQ}edit${SQ} does not accept merge commits
+	hint: ${SQ}edit${SQ} does not take a merge commit. If you wanted to
+	hint: replay the merge, use ${SQ}merge -C${SQ} on the commit, and then
+	hint: ${SQ}break${SQ} to give the control back to you so that you can
+	hint: do ${SQ}git commit --amend && git rebase --continue${SQ}.
+	hint: Disable this message with "git config advice.rebaseTodoError false"
+	error: invalid line 3: edit $oid
+	error: cannot squash merge commit into another commit
+	error: invalid line 4: fixup $oid
+	error: cannot squash merge commit into another commit
+	error: invalid line 5: squash $oid
+	You can fix this with ${SQ}git rebase --edit-todo${SQ} and then run ${SQ}git rebase --continue${SQ}.
+	Or you can abort the rebase with ${SQ}git rebase --abort${SQ}.
+	EOF
+	test_cmp expect actual
 '
 
 # This must be the last test in this file

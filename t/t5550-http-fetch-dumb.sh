@@ -25,6 +25,12 @@ test_expect_success 'setup repository' '
 	git commit -m two
 '
 
+test_expect_success 'packfile without repository does not crash' '
+	echo "fatal: not a git repository" >expect &&
+	test_must_fail nongit git http-fetch --packfile=abc 2>err &&
+	test_cmp expect err
+'
+
 setup_post_update_server_info_hook () {
 	test_hook --setup -C "$1" post-update <<-\EOF &&
 	exec git update-server-info
@@ -52,6 +58,21 @@ test_expect_success 'list refs from outside any repository' '
 	$(git rev-parse main)	refs/heads/main
 	EOF
 	nongit git ls-remote "$HTTPD_URL/dumb/repo.git" >actual &&
+	test_cmp expect actual
+'
+
+
+test_expect_success 'list detached HEAD from outside any repository' '
+	git clone --mirror "$HTTPD_DOCUMENT_ROOT_PATH/repo.git" \
+		"$HTTPD_DOCUMENT_ROOT_PATH/repo-detached.git" &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo-detached.git" \
+		update-ref --no-deref HEAD refs/heads/main &&
+	git -C "$HTTPD_DOCUMENT_ROOT_PATH/repo-detached.git" update-server-info &&
+	cat >expect <<-EOF &&
+	$(git rev-parse main)	HEAD
+	$(git rev-parse main)	refs/heads/main
+	EOF
+	nongit git ls-remote "$HTTPD_URL/dumb/repo-detached.git" >actual &&
 	test_cmp expect actual
 '
 

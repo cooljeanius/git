@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "skipping.h"
 #include "../commit.h"
@@ -73,7 +75,7 @@ static struct entry *rev_list_push(struct data *data, struct commit *commit, int
 	return entry;
 }
 
-static int clear_marks(const char *refname, const struct object_id *oid,
+static int clear_marks(const char *refname, const char *referent UNUSED, const struct object_id *oid,
 		       int flag UNUSED,
 		       void *cb_data UNUSED)
 {
@@ -261,6 +263,7 @@ void skipping_negotiator_init(struct fetch_negotiator *negotiator)
 	data->rev_list.compare = compare;
 
 	if (marked)
-		for_each_ref(clear_marks, NULL);
+		refs_for_each_ref(get_main_ref_store(the_repository),
+				  clear_marks, NULL);
 	marked = 1;
 }

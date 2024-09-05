@@ -5,6 +5,7 @@
 
 test_description='git mailinfo and git mailsplit test'
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 DATA="$TEST_DIRECTORY/t5100"
@@ -70,7 +71,7 @@ test_expect_success 'respect NULs' '
 
 	git mailsplit -d3 -o. "$DATA/nul-plain" &&
 	test_cmp "$DATA/nul-plain" 001 &&
-	(cat 001 | git mailinfo msg patch) &&
+	git mailinfo msg patch <001 &&
 	test_line_count = 4 patch
 
 '

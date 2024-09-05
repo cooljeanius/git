@@ -26,7 +26,6 @@ static const int delay[] = { 0, 1, 10, 20, 40 };
 void open_in_gdb(void)
 {
 	static struct child_process cp = CHILD_PROCESS_INIT;
-	extern char *_pgmptr;
 
 	strvec_pushl(&cp.args, "mintty", "gdb", NULL);
 	strvec_pushf(&cp.args, "--pid=%d", getpid());
@@ -707,13 +706,24 @@ ssize_t mingw_write(int fd, const void *buf, size_t len)
 {
 	ssize_t result = write(fd, buf, len);
 
-	if (result < 0 && errno == EINVAL && buf) {
+	if (result < 0 && (errno == EINVAL || errno == ENOSPC) && buf) {
+		int orig = errno;
+
 		/* check if fd is a pipe */
 		HANDLE h = (HANDLE) _get_osfhandle(fd);
-		if (GetFileType(h) == FILE_TYPE_PIPE)
+		if (GetFileType(h) != FILE_TYPE_PIPE)
+			errno = orig;
+		else if (orig == EINVAL)
 			errno = EPIPE;
-		else
-			errno = EINVAL;
+		else {
+			DWORD buf_size;
+
+			if (!GetNamedPipeInfo(h, NULL, NULL, &buf_size, NULL))
+				buf_size = 4096;
+			if (len > buf_size)
+				return write(fd, buf, buf_size);
+			errno = orig;
+		}
 	}
 
 	return result;
@@ -1536,7 +1546,7 @@ static int is_msys2_sh(const char *cmd)
 		return ret;
 	}
 
-	if (ends_with(cmd, "\\sh.exe")) {
+	if (ends_with(cmd, "\\sh.exe") || ends_with(cmd, "/sh.exe")) {
 		static char *sh;
 
 		if (!sh)
@@ -2268,7 +2278,11 @@ struct passwd *getpwuid(int uid)
 	p->pw_name = user_name;
 	p->pw_gecos = get_extended_user_info(NameDisplay);
 	if (!p->pw_gecos)
-		p->pw_gecos = "unknown";
+		/*
+		 * Data returned by getpwuid(3P) is treated as internal and
+		 * must never be written to or freed.
+		 */
+		p->pw_gecos = (char *) "unknown";
 	p->pw_dir = NULL;
 
 	initialized = 1;
@@ -2789,16 +2803,16 @@ int is_path_owned_by_current_sid(const char *path, struct strbuf *report)
 			strbuf_addf(report, "'%s' is on a file system that does "
 				    "not record ownership\n", path);
 		} else if (report) {
-			LPSTR str1, str2, str3, str4, to_free1 = NULL,
-			    to_free3 = NULL, to_local_free2 = NULL,
-			    to_local_free4 = NULL;
+			PCSTR str1, str2, str3, str4;
+			LPSTR to_free1 = NULL, to_free3 = NULL,
+			    to_local_free2 = NULL, to_local_free4 = NULL;
 
-			if (user_sid_to_user_name(sid, &str1))
-				to_free1 = str1;
+			if (user_sid_to_user_name(sid, &to_free1))
+				str1 = to_free1;
 			else
 				str1 = "(inconvertible)";
-			if (ConvertSidToStringSidA(sid, &str2))
-				to_local_free2 = str2;
+			if (ConvertSidToStringSidA(sid, &to_local_free2))
+				str2 = to_local_free2;
 			else
 				str2 = "(inconvertible)";
 
@@ -2811,13 +2825,13 @@ int is_path_owned_by_current_sid(const char *path, struct strbuf *report)
 				str4 = "(invalid)";
 			} else {
 				if (user_sid_to_user_name(current_user_sid,
-							  &str3))
-					to_free3 = str3;
+							  &to_free3))
+					str3 = to_free3;
 				else
 					str3 = "(inconvertible)";
 				if (ConvertSidToStringSidA(current_user_sid,
-							   &str4))
-					to_local_free4 = str4;
+							   &to_local_free4))
+					str4 = to_local_free4;
 				else
 					str4 = "(inconvertible)";
 			}
@@ -3147,3 +3161,24 @@ int uname(struct utsname *buf)
 		  "%u", (v >> 16) & 0x7fff);
 	return 0;
 }
+
+#ifndef NO_UNIX_SOCKETS
+int mingw_have_unix_sockets(void)
+{
+	SC_HANDLE scm, srvc;
+	SERVICE_STATUS_PROCESS status;
+	DWORD bytes;
+	int ret = 0;
+	scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CONNECT);
+	if (scm) {
+		srvc = OpenServiceA(scm, "afunix", SERVICE_QUERY_STATUS);
+		if (srvc) {
+			if(QueryServiceStatusEx(srvc, SC_STATUS_PROCESS_INFO, (LPBYTE)&status, sizeof(SERVICE_STATUS_PROCESS), &bytes))
+				ret = status.dwCurrentState == SERVICE_RUNNING;
+			CloseServiceHandle(srvc);
+		}
+		CloseServiceHandle(scm);
+	}
+	return ret;
+}
+#endif

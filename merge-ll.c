@@ -4,6 +4,8 @@
  * Copyright (c) 2007 Junio C Hamano
  */
 
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "config.h"
 #include "convert.h"
@@ -29,7 +31,7 @@ struct ll_merge_driver {
 	const char *name;
 	const char *description;
 	ll_merge_fn fn;
-	const char *recursive;
+	char *recursive;
 	struct ll_merge_driver *next;
 	char *cmdline;
 };
@@ -128,7 +130,9 @@ static enum ll_merge_result ll_xdl_merge(const struct ll_merge_driver *drv_unuse
 	xmp.level = XDL_MERGE_ZEALOUS;
 	xmp.favor = opts->variant;
 	xmp.xpp.flags = opts->xdl_opts;
-	if (git_xmerge_style >= 0)
+	if (opts->conflict_style >= 0)
+		xmp.style = opts->conflict_style;
+	else if (git_xmerge_style >= 0)
 		xmp.style = git_xmerge_style;
 	if (marker_size > 0)
 		xmp.marker_size = marker_size;
@@ -266,7 +270,7 @@ static enum ll_merge_result ll_ext_merge(const struct ll_merge_driver *fn,
  * merge.default and merge.driver configuration items
  */
 static struct ll_merge_driver *ll_user_merge, **ll_user_merge_tail;
-static const char *default_ll_merge;
+static char *default_ll_merge;
 
 static int read_merge_config(const char *var, const char *value,
 			     const struct config_context *ctx UNUSED,
@@ -292,7 +296,7 @@ static int read_merge_config(const char *var, const char *value,
 	 * after seeing merge.<name>.var1.
 	 */
 	for (fn = ll_user_merge; fn; fn = fn->next)
-		if (!strncmp(fn->name, name, namelen) && !fn->name[namelen])
+		if (!xstrncmpz(fn->name, name, namelen))
 			break;
 	if (!fn) {
 		CALLOC_ARRAY(fn, 1);
@@ -302,8 +306,13 @@ static int read_merge_config(const char *var, const char *value,
 		ll_user_merge_tail = &(fn->next);
 	}
 
-	if (!strcmp("name", key))
-		return git_config_string(&fn->description, var, value);
+	if (!strcmp("name", key)) {
+		/*
+		 * The description is leaking, but that's okay as we want to
+		 * keep around the merge drivers anyway.
+		 */
+		return git_config_string((char **) &fn->description, var, value);
+	}
 
 	if (!strcmp("driver", key)) {
 		if (!value)
@@ -401,7 +410,7 @@ enum ll_merge_result ll_merge(mmbuffer_t *result_buf,
 	     const struct ll_merge_options *opts)
 {
 	struct attr_check *check = load_merge_attributes();
-	static const struct ll_merge_options default_opts;
+	static const struct ll_merge_options default_opts = LL_MERGE_OPTIONS_INIT;
 	const char *ll_driver_name = NULL;
 	int marker_size = DEFAULT_CONFLICT_MARKER_SIZE;
 	const struct ll_merge_driver *driver;

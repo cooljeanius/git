@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "advice.h"
 #include "config.h"
@@ -100,8 +102,9 @@ static void set_upstreams(struct transport *transport, struct ref *refs,
 		/* Follow symbolic refs (mainly for HEAD). */
 		localname = ref->peer_ref->name;
 		remotename = ref->name;
-		tmp = resolve_ref_unsafe(localname, RESOLVE_REF_READING,
-					 NULL, &flag);
+		tmp = refs_resolve_ref_unsafe(get_main_ref_store(the_repository),
+					      localname, RESOLVE_REF_READING,
+					      NULL, &flag);
 		if (tmp && flag & REF_ISSYMREF &&
 			starts_with(tmp, "refs/heads/"))
 			localname = tmp;
@@ -183,8 +186,11 @@ static int fetch_refs_from_bundle(struct transport *transport,
 	if (!data->get_refs_from_bundle_called)
 		get_refs_from_bundle_inner(transport);
 	ret = unbundle(the_repository, &data->header, data->fd,
-		       &extra_index_pack_args, 0);
+		       &extra_index_pack_args,
+		       fetch_pack_fsck_objects() ? VERIFY_BUNDLE_FSCK : 0);
 	transport->hash_algo = data->header.hash_algo;
+
+	strvec_clear(&extra_index_pack_args);
 	return ret;
 }
 
@@ -543,10 +549,12 @@ static void update_one_tracking_ref(struct remote *remote, char *refname,
 		if (verbose)
 			fprintf(stderr, "updating local tracking ref '%s'\n", rs.dst);
 		if (deletion)
-			delete_ref(NULL, rs.dst, NULL, 0);
+			refs_delete_ref(get_main_ref_store(the_repository),
+					NULL, rs.dst, NULL, 0);
 		else
-			update_ref("update by push", rs.dst, new_oid,
-				   NULL, 0, 0);
+			refs_update_ref(get_main_ref_store(the_repository),
+					"update by push", rs.dst, new_oid,
+					NULL, 0, 0);
 		free(rs.dst);
 	}
 }
@@ -814,7 +822,8 @@ void transport_print_push_status(const char *dest, struct ref *refs,
 	if (transport_color_config() < 0)
 		warning(_("could not parse transport.color.* config"));
 
-	head = resolve_refdup("HEAD", RESOLVE_REF_READING, NULL, NULL);
+	head = refs_resolve_refdup(get_main_ref_store(the_repository), "HEAD",
+				   RESOLVE_REF_READING, NULL, NULL);
 
 	if (verbose) {
 		for (ref = refs; ref; ref = ref->next)
@@ -938,7 +947,13 @@ static int disconnect_git(struct transport *transport)
 		finish_connect(data->conn);
 	}
 
+	if (data->options.negotiation_tips) {
+		oid_array_clear(data->options.negotiation_tips);
+		free(data->options.negotiation_tips);
+	}
 	list_objects_filter_release(&data->options.filter_options);
+	oid_array_clear(&data->extra_have);
+	oid_array_clear(&data->shallow);
 	free(data);
 	return 0;
 }
@@ -1108,6 +1123,8 @@ static struct transport_vtable builtin_smart_vtable = {
 struct transport *transport_get(struct remote *remote, const char *url)
 {
 	const char *helper;
+	char *helper_to_free = NULL;
+	const char *p;
 	struct transport *ret = xcalloc(1, sizeof(*ret));
 
 	ret->progress = isatty(2);
@@ -1123,22 +1140,19 @@ struct transport *transport_get(struct remote *remote, const char *url)
 	ret->remote = remote;
 	helper = remote->foreign_vcs;
 
-	if (!url && remote->url)
-		url = remote->url[0];
+	if (!url)
+		url = remote->url.v[0];
 	ret->url = url;
 
-	/* maybe it is a foreign URL? */
-	if (url) {
-		const char *p = url;
-
-		while (is_urlschemechar(p == url, *p))
-			p++;
-		if (starts_with(p, "::"))
-			helper = xstrndup(url, p - url);
-	}
+	p = url;
+	while (is_urlschemechar(p == url, *p))
+		p++;
+	if (starts_with(p, "::"))
+		helper = helper_to_free = xstrndup(url, p - url);
 
 	if (helper) {
 		transport_helper_init(ret, helper);
+		free(helper_to_free);
 	} else if (starts_with(url, "rsync:")) {
 		die(_("git-over-rsync is no longer supported"));
 	} else if (url_is_local_not_ssh(url) && is_file(url) && is_bundle(url, 1)) {
@@ -1172,6 +1186,7 @@ struct transport *transport_get(struct remote *remote, const char *url)
 		int len = external_specification_len(url);
 		char *handler = xmemdupz(url, len);
 		transport_helper_init(ret, handler);
+		free(handler);
 	}
 
 	if (ret->smart_options) {
@@ -1266,7 +1281,7 @@ static int run_pre_push_hook(struct transport *transport,
 	struct ref *r;
 	struct child_process proc = CHILD_PROCESS_INIT;
 	struct strbuf buf;
-	const char *hook_path = find_hook("pre-push");
+	const char *hook_path = find_hook(the_repository, "pre-push");
 
 	if (!hook_path)
 		return 0;

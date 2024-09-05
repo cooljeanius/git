@@ -9,8 +9,10 @@ workflow:
 
 test:linux:
   image: $image
+  variables:
+    CUSTOM_PATH: "/custom"
   before_script:
-    - ./ci/install-docker-dependencies.sh
+    - ./ci/install-dependencies.sh
   script:
     - useradd builder --create-home
     - chown -R builder "${CI_PROJECT_DIR}"
@@ -26,6 +28,9 @@ test:linux:
       - jobname: linux-sha256
         image: ubuntu:latest
         CC: clang
+      - jobname: linux-reftable
+        image: ubuntu:latest
+        CC: clang
       - jobname: linux-gcc
         image: ubuntu:20.04
         CC: gcc
@@ -38,6 +43,9 @@ test:linux:
         image: ubuntu:latest
         CC: gcc
       - jobname: linux-leaks
+        image: ubuntu:latest
+        CC: gcc
+      - jobname: linux-reftable-leaks
         image: ubuntu:latest
         CC: gcc
       - jobname: linux-asan-ubsan
@@ -79,17 +87,70 @@ test:osx:
       - jobname: osx-clang
         image: macos-13-xcode-14
         CC: clang
+      - jobname: osx-reftable
+        image: macos-13-xcode-14
+        CC: clang
   artifacts:
     paths:
       - t/failed-test-artifacts
     when: on_failure
+
+test:fuzz-smoke-tests:
+  image: ubuntu:latest
+  variables:
+    CC: clang
+  before_script:
+    - ./ci/install-dependencies.sh
+  script:
+    - ./ci/run-build-and-minimal-fuzzers.sh
 
 static-analysis:
   image: ubuntu:22.04
   variables:
     jobname: StaticAnalysis
   before_script:
-    - ./ci/install-docker-dependencies.sh
+    - ./ci/install-dependencies.sh
   script:
     - ./ci/run-static-analysis.sh
     - ./ci/check-directional-formatting.bash
+
+check-whitespace:
+  image: ubuntu:latest
+  before_script:
+    - ./ci/install-dependencies.sh
+  # Since $CI_MERGE_REQUEST_TARGET_BRANCH_SHA is only defined for merged
+  # pipelines, we fallback to $CI_MERGE_REQUEST_DIFF_BASE_SHA, which should
+  # be defined in all pipelines.
+  script:
+    - |
+      R=${CI_MERGE_REQUEST_TARGET_BRANCH_SHA-${CI_MERGE_REQUEST_DIFF_BASE_SHA:?}} || exit
+      ./ci/check-whitespace.sh "$R"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+
+check-style:
+  image: ubuntu:latest
+  allow_failure: true
+  variables:
+    CC: clang
+    jobname: ClangFormat
+  before_script:
+    - ./ci/install-dependencies.sh
+  # Since $CI_MERGE_REQUEST_TARGET_BRANCH_SHA is only defined for merged
+  # pipelines, we fallback to $CI_MERGE_REQUEST_DIFF_BASE_SHA, which should
+  # be defined in all pipelines.
+  script:
+    - |
+      R=${CI_MERGE_REQUEST_TARGET_BRANCH_SHA-${CI_MERGE_REQUEST_DIFF_BASE_SHA:?}} || exit
+      ./ci/run-style-check.sh "$R"
+  rules:
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+
+documentation:
+  image: ubuntu:latest
+  variables:
+    jobname: Documentation
+  before_script:
+    - ./ci/install-dependencies.sh
+  script:
+    - ./ci/test-documentation.sh

@@ -11,6 +11,7 @@ among other things.
 GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=main
 export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 GIT_AUTHOR_NAME=author@name
@@ -234,6 +235,12 @@ test_expect_success 'rebase --merge -q is quiet' '
 	test_must_be_empty output.out
 '
 
+test_expect_success 'rebase --exec -q is quiet' '
+	git checkout -B quiet topic &&
+	git rebase --exec true -q main >output.out 2>&1 &&
+	test_must_be_empty output.out
+'
+
 test_expect_success 'Rebase a commit that sprinkles CRs in' '
 	(
 		echo "One" &&
@@ -422,16 +429,6 @@ test_expect_success 'refuse to switch to branch checked out elsewhere' '
 	git worktree add wt &&
 	test_must_fail git -C wt rebase main main 2>err &&
 	test_grep "already used by worktree at" err
-'
-
-test_expect_success REFFILES,MINGW,SYMLINKS_WINDOWS 'rebase when .git/logs is a symlink' '
-	git checkout main &&
-	mv .git/logs actual_logs &&
-	cmd //c "mklink /D .git\logs ..\actual_logs" &&
-	git rebase -f HEAD^ &&
-	test -L .git/logs &&
-	rm .git/logs &&
-	mv actual_logs .git/logs
 '
 
 test_expect_success 'rebase when inside worktree subdirectory' '

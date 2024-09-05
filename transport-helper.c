@@ -1,3 +1,5 @@
+#define USE_THE_REPOSITORY_VARIABLE
+
 #include "git-compat-util.h"
 #include "transport.h"
 #include "quote.h"
@@ -22,7 +24,7 @@
 static int debug;
 
 struct helper_data {
-	const char *name;
+	char *name;
 	struct child_process *helper;
 	FILE *out;
 	unsigned fetch : 1,
@@ -111,6 +113,7 @@ static void do_take_over(struct transport *transport)
 	data = (struct helper_data *)transport->data;
 	transport_take_over(transport, data->helper);
 	fclose(data->out);
+	free(data->name);
 	free(data);
 }
 
@@ -253,6 +256,7 @@ static int disconnect_helper(struct transport *transport)
 		close(data->helper->out);
 		fclose(data->out);
 		res = finish_command(data->helper);
+		FREE_AND_NULL(data->name);
 		FREE_AND_NULL(data->helper);
 	}
 	return res;
@@ -551,7 +555,7 @@ static int fetch_with_import(struct transport *transport,
 		else
 			private = xstrdup(name);
 		if (private) {
-			if (read_ref(private, &posn->old_oid) < 0)
+			if (refs_read_ref(get_main_ref_store(the_repository), private, &posn->old_oid) < 0)
 				die(_("could not read ref %s"), private);
 			free(private);
 		}
@@ -923,8 +927,10 @@ static int push_update_refs_status(struct helper_data *data,
 			private = apply_refspecs(&data->rs, ref->name);
 			if (!private)
 				continue;
-			update_ref("update by helper", private, &(ref->new_oid),
-				   NULL, 0, 0);
+			refs_update_ref(get_main_ref_store(the_repository),
+					"update by helper", private,
+					&(ref->new_oid),
+					NULL, 0, 0);
 			free(private);
 		} else {
 			for (report = ref->report; report; report = report->next) {
@@ -934,11 +940,12 @@ static int push_update_refs_status(struct helper_data *data,
 							 : ref->name);
 				if (!private)
 					continue;
-				update_ref("update by helper", private,
-					   report->new_oid
-					   ? report->new_oid
-					   : &(ref->new_oid),
-					   NULL, 0, 0);
+				refs_update_ref(get_main_ref_store(the_repository),
+						"update by helper", private,
+						report->new_oid
+						? report->new_oid
+						: &(ref->new_oid),
+						NULL, 0, 0);
 				free(private);
 			}
 		}
@@ -1078,7 +1085,7 @@ static int push_refs_with_export(struct transport *transport,
 	set_common_push_options(transport, data->name, flags);
 	if (flags & TRANSPORT_PUSH_FORCE) {
 		if (set_helper_option(transport, "force", "true") != 0)
-			warning(_("helper %s does not support 'force'"), data->name);
+			warning(_("helper %s does not support '--force'"), data->name);
 	}
 
 	helper = get_helper(transport);
@@ -1105,9 +1112,11 @@ static int push_refs_with_export(struct transport *transport,
 					int flag;
 
 					/* Follow symbolic refs (mainly for HEAD). */
-					name = resolve_ref_unsafe(ref->peer_ref->name,
-								  RESOLVE_REF_READING,
-								  &oid, &flag);
+					name = refs_resolve_ref_unsafe(get_main_ref_store(the_repository),
+								       ref->peer_ref->name,
+								       RESOLVE_REF_READING,
+								       &oid,
+								       &flag);
 					if (!name || !(flag & REF_ISSYMREF))
 						name = ref->peer_ref->name;
 
@@ -1210,16 +1219,13 @@ static struct ref *get_refs_list_using_list(struct transport *transport,
 	data->get_refs_list_called = 1;
 	helper = get_helper(transport);
 
-	if (data->object_format) {
-		write_str_in_full(helper->in, "option object-format\n");
-		if (recvline(data, &buf) || strcmp(buf.buf, "ok"))
-			exit(128);
-	}
+	if (data->object_format)
+		set_helper_option(transport, "object-format", "true");
 
 	if (data->push && for_push)
-		write_str_in_full(helper->in, "list for-push\n");
+		write_constant(helper->in, "list for-push\n");
 	else
-		write_str_in_full(helper->in, "list\n");
+		write_constant(helper->in, "list\n");
 
 	while (1) {
 		char *eov, *eon;
@@ -1255,7 +1261,7 @@ static struct ref *get_refs_list_using_list(struct transport *transport,
 		if (eon) {
 			if (has_attribute(eon + 1, "unchanged")) {
 				(*tail)->status |= REF_STATUS_UPTODATE;
-				if (read_ref((*tail)->name, &(*tail)->old_oid) < 0)
+				if (refs_read_ref(get_main_ref_store(the_repository), (*tail)->name, &(*tail)->old_oid) < 0)
 					die(_("could not read ref %s"),
 					    (*tail)->name);
 			}
@@ -1295,7 +1301,7 @@ static struct transport_vtable vtable = {
 int transport_helper_init(struct transport *transport, const char *name)
 {
 	struct helper_data *data = xcalloc(1, sizeof(*data));
-	data->name = name;
+	data->name = xstrdup(name);
 
 	transport_check_allowed(name);
 

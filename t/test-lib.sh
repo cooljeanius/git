@@ -1269,9 +1269,12 @@ check_test_results_san_file_ () {
 	then
 		say "As TEST_PASSES_SANITIZE_LEAK=true isn't set the above leak is 'ok' with GIT_TEST_PASSING_SANITIZE_LEAK=check" &&
 		invert_exit_code=t
-	else
-		say "With GIT_TEST_SANITIZE_LEAK_LOG=true our logs revealed a memory leak, exit non-zero!" &&
+	elif test "$test_failure" = 0
+	then
+		say "Our logs revealed a memory leak, exit non-zero!" &&
 		invert_exit_code=t
+	else
+		say "Our logs revealed a memory leak..."
 	fi
 }
 
@@ -1295,6 +1298,11 @@ test_done () {
 		missing_prereq $test_missing_prereq
 
 		EOF
+	fi
+
+	if test -z "$passes_sanitize_leak" && test_bool_env TEST_PASSES_SANITIZE_LEAK false
+	then
+		BAIL_OUT "Please, set TEST_PASSES_SANITIZE_LEAK before sourcing test-lib.sh"
 	fi
 
 	if test "$test_fixed" != 0
@@ -1570,33 +1578,28 @@ then
 		test_done
 	fi
 
-	if test_bool_env GIT_TEST_SANITIZE_LEAK_LOG false
+	if ! mkdir -p "$TEST_RESULTS_SAN_DIR"
 	then
-		if ! mkdir -p "$TEST_RESULTS_SAN_DIR"
-		then
-			BAIL_OUT "cannot create $TEST_RESULTS_SAN_DIR"
-		fi &&
-		TEST_RESULTS_SAN_FILE="$TEST_RESULTS_SAN_DIR/$TEST_RESULTS_SAN_FILE_PFX"
+		BAIL_OUT "cannot create $TEST_RESULTS_SAN_DIR"
+	fi &&
+	TEST_RESULTS_SAN_FILE="$TEST_RESULTS_SAN_DIR/$TEST_RESULTS_SAN_FILE_PFX"
 
-		# In case "test-results" is left over from a previous
-		# run: Only report if new leaks show up.
-		TEST_RESULTS_SAN_DIR_NR_LEAKS_STARTUP=$(nr_san_dir_leaks_)
+	# In case "test-results" is left over from a previous
+	# run: Only report if new leaks show up.
+	TEST_RESULTS_SAN_DIR_NR_LEAKS_STARTUP=$(nr_san_dir_leaks_)
 
-		# Don't litter *.leak dirs if there was nothing to report
-		test_atexit "rmdir \"$TEST_RESULTS_SAN_DIR\" 2>/dev/null || :"
+	# Don't litter *.leak dirs if there was nothing to report
+	test_atexit "rmdir \"$TEST_RESULTS_SAN_DIR\" 2>/dev/null || :"
 
-		prepend_var LSAN_OPTIONS : dedup_token_length=9999
-		prepend_var LSAN_OPTIONS : log_exe_name=1
-		prepend_var LSAN_OPTIONS : log_path=\"$TEST_RESULTS_SAN_FILE\"
-		export LSAN_OPTIONS
-	fi
+	prepend_var LSAN_OPTIONS : dedup_token_length=9999
+	prepend_var LSAN_OPTIONS : log_exe_name=1
+	prepend_var LSAN_OPTIONS : log_path=\"$TEST_RESULTS_SAN_FILE\"
+	export LSAN_OPTIONS
+
 elif test "$GIT_TEST_PASSING_SANITIZE_LEAK" = "check" ||
      test_bool_env GIT_TEST_PASSING_SANITIZE_LEAK false
 then
 	BAIL_OUT_ENV_NEEDS_SANITIZE_LEAK "GIT_TEST_PASSING_SANITIZE_LEAK=true"
-elif test_bool_env GIT_TEST_SANITIZE_LEAK_LOG false
-then
-	BAIL_OUT_ENV_NEEDS_SANITIZE_LEAK "GIT_TEST_SANITIZE_LEAK_LOG=true"
 fi
 
 if test "${GIT_TEST_CHAIN_LINT:-1}" != 0 &&
@@ -1750,6 +1753,8 @@ esac
 case "$GIT_DEFAULT_REF_FORMAT" in
 files)
 	test_set_prereq REFFILES;;
+reftable)
+	test_set_prereq REFTABLE;;
 *)
 	echo 2>&1 "error: unknown ref format $GIT_DEFAULT_REF_FORMAT"
 	exit 1
@@ -1955,6 +1960,7 @@ test_lazy_prereq DEFAULT_REPO_FORMAT '
 # Tests that verify the scheduler integration must set this locally
 # to avoid errors.
 GIT_TEST_MAINT_SCHEDULER="none:exit 1"
+export GIT_TEST_MAINT_SCHEDULER
 
 # Does this platform support `git fsmonitor--daemon`
 #

@@ -159,7 +159,10 @@ init_repos () {
 	git -C sparse-checkout sparse-checkout set deep &&
 	git -C sparse-index sparse-checkout init --cone --sparse-index &&
 	test_cmp_config -C sparse-index true index.sparse &&
-	git -C sparse-index sparse-checkout set deep
+	git -C sparse-index sparse-checkout set deep &&
+
+	# Disable this message to keep stderr the same.
+	git -C sparse-index config advice.sparseIndexExpanded false
 }
 
 init_repos_as_submodules () {
@@ -800,6 +803,8 @@ test_expect_success 'update-index --remove outside sparse definition' '
 	test_sparse_match git diff --cached --name-status &&
 	test_cmp expect sparse-checkout-out &&
 
+	test_sparse_match git diff-index --cached HEAD &&
+
 	# Reset the state
 	test_all_match git reset --hard &&
 
@@ -808,6 +813,8 @@ test_expect_success 'update-index --remove outside sparse definition' '
 	test_sparse_match git update-index --remove --ignore-skip-worktree-entries folder1/a &&
 	test_sparse_match git diff --cached --name-status &&
 	test_must_be_empty sparse-checkout-out &&
+
+	test_sparse_match git diff-index --cached HEAD &&
 
 	# Reset the state
 	test_all_match git reset --hard &&
@@ -820,7 +827,9 @@ test_expect_success 'update-index --remove outside sparse definition' '
 	D	folder1/a
 	EOF
 	test_sparse_match git diff --cached --name-status &&
-	test_cmp expect sparse-checkout-out
+	test_cmp expect sparse-checkout-out &&
+
+	test_sparse_match git diff-index --cached HEAD
 '
 
 test_expect_success 'update-index with directories' '
@@ -1548,7 +1557,7 @@ test_expect_success 'sparse-index is not expanded: describe' '
 	ensure_not_expanded describe
 '
 
-test_expect_success 'sparse index is not expanded: diff' '
+test_expect_success 'sparse index is not expanded: diff and diff-index' '
 	init_repos &&
 
 	write_script edit-contents <<-\EOF &&
@@ -1565,6 +1574,7 @@ test_expect_success 'sparse index is not expanded: diff' '
 	test_all_match git diff --cached &&
 	ensure_not_expanded diff &&
 	ensure_not_expanded diff --cached &&
+	ensure_not_expanded diff-index --cached HEAD &&
 
 	# Add file outside cone
 	test_all_match git reset --hard &&
@@ -1579,6 +1589,7 @@ test_expect_success 'sparse index is not expanded: diff' '
 	test_all_match git diff --cached &&
 	ensure_not_expanded diff &&
 	ensure_not_expanded diff --cached &&
+	ensure_not_expanded diff-index --cached HEAD &&
 
 	# Merge conflict outside cone
 	# The sparse checkout will report a warning that is not in the
@@ -1591,7 +1602,8 @@ test_expect_success 'sparse index is not expanded: diff' '
 	test_all_match git diff &&
 	test_all_match git diff --cached &&
 	ensure_not_expanded diff &&
-	ensure_not_expanded diff --cached
+	ensure_not_expanded diff --cached &&
+	ensure_not_expanded diff-index --cached HEAD
 '
 
 test_expect_success 'sparse index is not expanded: show and rev-parse' '
@@ -2329,6 +2341,17 @@ test_expect_success 'sparse-index is not expanded: check-attr' '
 	git -C sparse-index add --sparse folder1/.gitattributes &&
 	ensure_not_expanded check-attr -a --cached -- deep/a &&
 	ensure_not_expanded check-attr -a --cached -- folder1/a
+'
+
+test_expect_success 'advice.sparseIndexExpanded' '
+	init_repos &&
+
+	git -C sparse-index config --unset advice.sparseIndexExpanded &&
+	git -C sparse-index sparse-checkout set deep/deeper1 &&
+	mkdir -p sparse-index/deep/deeper2/deepest &&
+	touch sparse-index/deep/deeper2/deepest/bogus &&
+	git -C sparse-index status 2>err &&
+	grep "The sparse index is expanding to a full index" err
 '
 
 test_done

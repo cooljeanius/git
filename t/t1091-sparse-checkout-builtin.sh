@@ -8,6 +8,7 @@ export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
 GIT_TEST_SPLIT_INDEX=false
 export GIT_TEST_SPLIT_INDEX
 
+TEST_PASSES_SANITIZE_LEAK=true
 . ./test-lib.sh
 
 list_files() {
@@ -968,7 +969,7 @@ test_expect_success 'check-rules non-cone mode' '
 	git -C bare sparse-checkout check-rules --no-cone --rules-file ../rules\
 		>check-rules-file <all-files &&
 
-	cat rules | git -C repo sparse-checkout set --no-cone --stdin &&
+	git -C repo sparse-checkout set --no-cone --stdin <rules &&
 	git -C repo ls-files -t >out &&
 	sed -n "/^S /!s/^. //p" out >ls-files &&
 

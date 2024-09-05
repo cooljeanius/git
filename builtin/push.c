@@ -96,9 +96,8 @@ static void refspec_append_mapped(struct refspec *refspec, const char *ref,
 	refspec_append(refspec, ref);
 }
 
-static void set_refspecs(const char **refs, int nr, const char *repo)
+static void set_refspecs(const char **refs, int nr, struct remote *remote)
 {
-	struct remote *remote = NULL;
 	struct ref *local_refs = NULL;
 	int i;
 
@@ -124,31 +123,14 @@ static void set_refspecs(const char **refs, int nr, const char *repo)
 				local_refs = get_local_heads();
 
 			/* Does "ref" uniquely name our ref? */
-			if (count_refspec_match(ref, local_refs, &matched) != 1) {
+			if (count_refspec_match(ref, local_refs, &matched) != 1)
 				refspec_append(&rs, ref);
-			} else {
-				/* lazily grab remote */
-				if (!remote)
-					remote = remote_get(repo);
-				if (!remote)
-					BUG("must get a remote for repo '%s'", repo);
-
+			else
 				refspec_append_mapped(&rs, ref, remote, matched);
-			}
 		} else
 			refspec_append(&rs, ref);
 	}
 	free_refs(local_refs);
-}
-
-static int push_url_of_remote(struct remote *remote, const char ***url_p)
-{
-	if (remote->pushurl_nr) {
-		*url_p = remote->pushurl;
-		return remote->pushurl_nr;
-	}
-	*url_p = remote->url;
-	return remote->url_nr;
 }
 
 static NORETURN void die_push_simple(struct branch *branch,
@@ -434,8 +416,7 @@ static int do_push(int flags,
 		   struct remote *remote)
 {
 	int i, errs;
-	const char **url;
-	int url_nr;
+	struct strvec *url;
 	struct refspec *push_refspec = &rs;
 
 	if (push_options->nr)
@@ -448,19 +429,10 @@ static int do_push(int flags,
 			setup_default_push_refspecs(&flags, remote);
 	}
 	errs = 0;
-	url_nr = push_url_of_remote(remote, &url);
-	if (url_nr) {
-		for (i = 0; i < url_nr; i++) {
-			struct transport *transport =
-				transport_get(remote, url[i]);
-			if (flags & TRANSPORT_PUSH_OPTIONS)
-				transport->push_options = push_options;
-			if (push_with_options(transport, push_refspec, flags))
-				errs++;
-		}
-	} else {
+	url = push_url_of_remote(remote);
+	for (i = 0; i < url->nr; i++) {
 		struct transport *transport =
-			transport_get(remote, NULL);
+			transport_get(remote, url->v[i]);
 		if (flags & TRANSPORT_PUSH_OPTIONS)
 			transport->push_options = push_options;
 		if (push_with_options(transport, push_refspec, flags))
@@ -650,10 +622,8 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 	if (tags)
 		refspec_append(&rs, "refs/tags/*");
 
-	if (argc > 0) {
+	if (argc > 0)
 		repo = argv[0];
-		set_refspecs(argv + 1, argc - 1, repo);
-	}
 
 	remote = pushremote_get(repo);
 	if (!remote) {
@@ -668,6 +638,9 @@ int cmd_push(int argc, const char **argv, const char *prefix)
 		    "\n"
 		    "    git push <name>\n"));
 	}
+
+	if (argc > 0)
+		set_refspecs(argv + 1, argc - 1, remote);
 
 	if (remote->mirror)
 		flags |= (TRANSPORT_PUSH_MIRROR|TRANSPORT_PUSH_FORCE);

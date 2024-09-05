@@ -8,6 +8,7 @@
 #include "strbuf.h"
 #include "trace2.h"
 #include "object-store-ll.h"
+#include "replace-object.h"
 
 #define BUILTIN_MIDX_WRITE_USAGE \
 	N_("git multi-pack-index [<options>] write [--preferred-pack=<pack>]" \
@@ -49,7 +50,7 @@ static char const * const builtin_multi_pack_index_usage[] = {
 static struct opts_multi_pack_index {
 	char *object_dir;
 	const char *preferred_pack;
-	const char *refs_snapshot;
+	char *refs_snapshot;
 	unsigned long batch_size;
 	unsigned flags;
 	int stdin_packs;
@@ -128,12 +129,15 @@ static int cmd_multi_pack_index_write(int argc, const char **argv,
 			MIDX_WRITE_BITMAP | MIDX_WRITE_REV_INDEX),
 		OPT_BIT(0, "progress", &opts.flags,
 			N_("force progress reporting"), MIDX_PROGRESS),
+		OPT_BIT(0, "incremental", &opts.flags,
+			N_("write a new incremental MIDX"), MIDX_WRITE_INCREMENTAL),
 		OPT_BOOL(0, "stdin-packs", &opts.stdin_packs,
 			 N_("write multi-pack index containing only given indexes")),
 		OPT_FILENAME(0, "refs-snapshot", &opts.refs_snapshot,
 			     N_("refs snapshot for selecting bitmap commits")),
 		OPT_END(),
 	};
+	int ret;
 
 	opts.flags |= MIDX_WRITE_BITMAP_HASH_CACHE;
 
@@ -156,7 +160,6 @@ static int cmd_multi_pack_index_write(int argc, const char **argv,
 
 	if (opts.stdin_packs) {
 		struct string_list packs = STRING_LIST_INIT_DUP;
-		int ret;
 
 		read_packs_from_stdin(&packs);
 
@@ -165,12 +168,17 @@ static int cmd_multi_pack_index_write(int argc, const char **argv,
 					   opts.refs_snapshot, opts.flags);
 
 		string_list_clear(&packs, 0);
+		free(opts.refs_snapshot);
 
 		return ret;
 
 	}
-	return write_midx_file(opts.object_dir, opts.preferred_pack,
-			       opts.refs_snapshot, opts.flags);
+
+	ret = write_midx_file(opts.object_dir, opts.preferred_pack,
+			      opts.refs_snapshot, opts.flags);
+
+	free(opts.refs_snapshot);
+	return ret;
 }
 
 static int cmd_multi_pack_index_verify(int argc, const char **argv,
@@ -272,6 +280,8 @@ int cmd_multi_pack_index(int argc, const char **argv,
 		OPT_END(),
 	};
 	struct option *options = parse_options_concat(builtin_multi_pack_index_options, common_opts);
+
+	disable_replace_refs();
 
 	git_config(git_default_config, NULL);
 

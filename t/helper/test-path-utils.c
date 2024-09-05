@@ -7,6 +7,7 @@
 #include "string-list.h"
 #include "trace.h"
 #include "utf8.h"
+#include "copy.h"
 
 /*
  * A "string_list_each_func_t" function that normalizes an entry from

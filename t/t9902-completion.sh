@@ -11,6 +11,12 @@ test_description='test bash completion'
 # untraceable with such ancient Bash versions.
 test_untraceable=UnfortunatelyYes
 
+# Override environment and always use master for the default initial branch
+# name for these tests, so that rev completion candidates are as expected.
+GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME=master
+export GIT_TEST_DEFAULT_INITIAL_BRANCH_NAME
+
+TEST_PASSES_SANITIZE_LEAK=true
 . ./lib-bash.sh
 
 complete ()
@@ -68,7 +74,7 @@ _get_comp_words_by_ref ()
 print_comp ()
 {
 	local IFS=$'\n'
-	echo "${COMPREPLY[*]}" > out
+	printf '%s\n' "${COMPREPLY[*]}" > out
 }
 
 run_completion ()
@@ -1258,6 +1264,29 @@ test_expect_success '__git_complete_fetch_refspecs - fully qualified & prefix' '
 	test_cmp expected out
 '
 
+test_expect_success '__git_complete_worktree_paths' '
+	test_when_finished "git worktree remove other_wt" &&
+	git worktree add --orphan other_wt &&
+	run_completion "git worktree remove " &&
+	grep other_wt out
+'
+
+test_expect_success '__git_complete_worktree_paths - not a git repository' '
+	(
+		cd non-repo &&
+		GIT_CEILING_DIRECTORIES="$ROOT" &&
+		export GIT_CEILING_DIRECTORIES &&
+		test_completion "git worktree remove " ""
+	)
+'
+
+test_expect_success '__git_complete_worktree_paths with -C' '
+	test_when_finished "git -C otherrepo worktree remove otherrepo_wt" &&
+	git -C otherrepo worktree add --orphan otherrepo_wt &&
+	run_completion "git -C otherrepo worktree remove " &&
+	grep otherrepo_wt out
+'
+
 test_expect_success 'git switch - with no options, complete local branches and unique remote branch names for DWIM logic' '
 	test_completion "git switch " <<-\EOF
 	branch-in-other Z
@@ -1265,6 +1294,142 @@ test_expect_success 'git switch - with no options, complete local branches and u
 	main-in-other Z
 	matching-branch Z
 	EOF
+'
+
+test_expect_success 'git bisect - when not bisecting, complete only replay and start subcommands' '
+	test_completion "git bisect " <<-\EOF
+	replay Z
+	start Z
+	EOF
+'
+
+test_expect_success 'git bisect - complete options to start subcommand' '
+	test_completion "git bisect start --" <<-\EOF
+	--term-new Z
+	--term-bad Z
+	--term-old Z
+	--term-good Z
+	--no-checkout Z
+	--first-parent Z
+	EOF
+'
+
+test_expect_success 'setup for git-bisect tests requiring a repo' '
+	git init git-bisect &&
+	(
+		cd git-bisect &&
+		echo "initial contents" >file &&
+		git add file &&
+		git commit -am "Initial commit" &&
+		git tag initial &&
+		echo "new line" >>file &&
+		git commit -am "First change" &&
+		echo "another new line" >>file &&
+		git commit -am "Second change" &&
+		git tag final
+	)
+'
+
+test_expect_success 'git bisect - start subcommand arguments before double-dash are completed as revs' '
+	(
+		cd git-bisect &&
+		test_completion "git bisect start " <<-\EOF
+		HEAD Z
+		final Z
+		initial Z
+		master Z
+		EOF
+	)
+'
+
+# Note that these arguments are <pathspec>s, which in practice the fallback
+# completion (not the git completion) later ends up completing as paths.
+test_expect_success 'git bisect - start subcommand arguments after double-dash are not completed' '
+	(
+		cd git-bisect &&
+		test_completion "git bisect start final initial -- " ""
+	)
+'
+
+test_expect_success 'setup for git-bisect tests requiring ongoing bisection' '
+	(
+		cd git-bisect &&
+		git bisect start --term-new=custom_new --term-old=custom_old final initial
+	)
+'
+
+test_expect_success 'git-bisect - when bisecting all subcommands are candidates' '
+	(
+		cd git-bisect &&
+		test_completion "git bisect " <<-\EOF
+		start Z
+		bad Z
+		custom_new Z
+		custom_old Z
+		new Z
+		good Z
+		old Z
+		terms Z
+		skip Z
+		reset Z
+		visualize Z
+		replay Z
+		log Z
+		run Z
+		help Z
+		EOF
+	)
+'
+
+test_expect_success 'git-bisect - options to terms subcommand are candidates' '
+	(
+		cd git-bisect &&
+		test_completion "git bisect terms --" <<-\EOF
+		--term-bad Z
+		--term-good Z
+		--term-new Z
+		--term-old Z
+		EOF
+	)
+'
+
+test_expect_success 'git-bisect - git-log options to visualize subcommand are candidates' '
+	(
+		cd git-bisect &&
+		# The completion used for git-log and here does not complete
+		# every git-log option, so rather than hope to stay in sync
+		# with exactly what it does we will just spot-test here.
+		test_completion "git bisect visualize --sta" <<-\EOF &&
+		--stat Z
+		EOF
+		test_completion "git bisect visualize --summar" <<-\EOF
+		--summary Z
+		EOF
+	)
+'
+
+test_expect_success 'git-bisect - view subcommand is not a candidate' '
+	(
+		cd git-bisect &&
+		test_completion "git bisect vi" <<-\EOF
+		visualize Z
+		EOF
+	)
+'
+
+test_expect_success 'git-bisect - existing view subcommand is recognized and enables completion of git-log options' '
+	(
+		cd git-bisect &&
+		# The completion used for git-log and here does not complete
+		# every git-log option, so rather than hope to stay in sync
+		# with exactly what it does we will just spot-test here.
+		test_completion "git bisect view --sta" <<-\EOF &&
+		--stat Z
+		EOF
+		test_completion "git bisect view --summar" <<-\EOF
+		--summary Z
+		EOF
+	)
 '
 
 test_expect_success 'git checkout - completes refs and unique remote branches for DWIM' '
@@ -2354,6 +2519,29 @@ test_expect_success 'complete tree filename with metacharacters' '
 	EOF
 '
 
+test_expect_success 'symbolic-ref completes builtin options' '
+	test_completion "git symbolic-ref --d" <<-\EOF
+	--delete Z
+	EOF
+'
+
+test_expect_success 'symbolic-ref completes short ref names' '
+	test_completion "git symbolic-ref foo m" <<-\EOF
+	main Z
+	mybranch Z
+	mytag Z
+	EOF
+'
+
+test_expect_success 'symbolic-ref completes full ref names' '
+	test_completion "git symbolic-ref foo refs/" <<-\EOF
+	refs/heads/main Z
+	refs/heads/mybranch Z
+	refs/tags/mytag Z
+	refs/tags/A Z
+	EOF
+'
+
 test_expect_success PERL 'send-email' '
 	test_completion "git send-email --cov" <<-\EOF &&
 	--cover-from-description=Z
@@ -2555,36 +2743,93 @@ do
 	'
 done
 
-test_expect_success 'git config - section' '
-	test_completion "git config br" <<-\EOF
+test_expect_success 'git config subcommand' '
+	test_completion "git config " <<-\EOF
+	edit Z
+	get Z
+	list Z
+	remove-section Z
+	rename-section Z
+	set Z
+	unset Z
+	EOF
+'
+
+test_expect_success 'git config subcommand options' '
+	test_completion "git config get --show-" <<-\EOF
+	--show-names Z
+	--show-origin Z
+	--show-scope Z
+	EOF
+'
+
+test_expect_success 'git config get' '
+	test_when_finished "rm -f cfgfile" &&
+	git config set --file cfgfile foo.bar baz &&
+	test_completion "git config get --file cfgfile foo." <<-\EOF
+	foo.bar Z
+	EOF
+'
+
+test_expect_success 'git config set - section' '
+	test_completion "git config set br" <<-\EOF
 	branch.Z
 	browser.Z
 	EOF
 '
 
-test_expect_success 'git config - section include, includeIf' '
-	test_completion "git config inclu" <<-\EOF
+test_expect_success 'git config set - section include, includeIf' '
+	test_completion "git config set inclu" <<-\EOF
 	include.Z
 	includeIf.Z
 	EOF
 '
 
-test_expect_success 'git config - variable name' '
-	test_completion "git config log.d" <<-\EOF
+test_expect_success 'git config set - variable name' '
+	test_completion "git config set log.d" <<-\EOF
 	log.date Z
 	log.decorate Z
 	log.diffMerges Z
 	EOF
 '
 
-test_expect_success 'git config - variable name include' '
-	test_completion "git config include.p" <<-\EOF
+test_expect_success 'git config set - variable name include' '
+	test_completion "git config set include.p" <<-\EOF
 	include.path Z
 	EOF
 '
 
-test_expect_success 'git config - value' '
-	test_completion "git config color.pager " <<-\EOF
+test_expect_success 'setup for git config submodule tests' '
+	test_create_repo sub &&
+	test_commit -C sub initial &&
+	git submodule add ./sub
+'
+
+test_expect_success 'git config set - variable name - submodule and __git_compute_first_level_config_vars_for_section' '
+	test_completion "git config set submodule." <<-\EOF
+	submodule.active Z
+	submodule.alternateErrorStrategy Z
+	submodule.alternateLocation Z
+	submodule.fetchJobs Z
+	submodule.propagateBranches Z
+	submodule.recurse Z
+	submodule.sub.Z
+	EOF
+'
+
+test_expect_success 'git config set - variable name - __git_compute_second_level_config_vars_for_section' '
+	test_completion "git config set submodule.sub." <<-\EOF
+	submodule.sub.url Z
+	submodule.sub.update Z
+	submodule.sub.branch Z
+	submodule.sub.fetchRecurseSubmodules Z
+	submodule.sub.ignore Z
+	submodule.sub.active Z
+	EOF
+'
+
+test_expect_success 'git config set - value' '
+	test_completion "git config set color.pager " <<-\EOF
 	false Z
 	true Z
 	EOF
@@ -2632,6 +2877,20 @@ test_expect_success 'git clone --config= - value' '
 	false Z
 	true Z
 	EOF
+'
+
+test_expect_success 'git reflog show' '
+	test_when_finished "git checkout - && git branch -d shown" &&
+	git checkout -b shown &&
+	test_completion "git reflog sho" <<-\EOF &&
+	show Z
+	shown Z
+	EOF
+	test_completion "git reflog show sho" "shown " &&
+	test_completion "git reflog shown sho" "shown " &&
+	test_completion "git reflog --unt" "--until=" &&
+	test_completion "git reflog show --unt" "--until=" &&
+	test_completion "git reflog shown --unt" "--until="
 '
 
 test_expect_success 'options with value' '
